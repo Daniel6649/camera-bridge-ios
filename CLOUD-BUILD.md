@@ -29,4 +29,4 @@ Eine unsignierte IPA lässt sich nicht unmittelbar durch Antippen installieren. 
 - `ios/scripts/check-wire-format.sh`: führt Prüfungen gegen rekonstruierte Referenzbytes aus.
 - `ios/scripts/build-export.sh`: optionaler regulärer Export mit Apple-Signierung auf einem Mac.
 
-Die Cloud-Konfiguration wurde lokal vorbereitet. Ein echter GitHub-Build und die Installation sind erst bestätigt, nachdem die entsprechende Ausführung erfolgreich abgeschlossen ist.
+Der [Cloud-Build vom 12. Oktober 2026](https://github.com/Daniel6649/camera-bridge-ios/actions/runs/38259282862) ist erfolgreich: Referenzprüfungen, Xcode-Kompilierung und IPA-Paketierung bestanden. Die IPA ist ARM64, benötigt mindestens iOS 15.0 und hat die Bundle-ID `net.local.camerabridge`. Die Installation und die Kameraübertragung müssen noch auf dem iPhone geprüft werden.

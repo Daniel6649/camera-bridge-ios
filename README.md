@@ -6,9 +6,11 @@ Eigenständig geschriebener Swift-Client auf Basis der statischen Analyse von iV
 
 Implementiert sind Kamera-Vorschau, H.264-Encoding, manuelle Desktop-Adresse und der rekonstruierte TCP-Verbindungsablauf. Unterstützte Auflösungen und Bildraten hängen vom iPhone ab.
 
-Die Anmeldung ist anhand einer tatsächlichen Antwort des installierten Desktop-Clients bestätigt. Die vollständige Videoübertragung der finalen Implementierung ist noch nicht getestet. Ein früherer Test ohne die erforderliche Kontrollanmeldung zeigte nur das Wartebild; daraus folgt ausdrücklich keine bestätigte Videokompatibilität.
+Der GitHub-Build ist erfolgreich: Xcode 16.4 kompiliert die App für ARM64/iOS 15+, die Protokoll-Referenzprüfungen bestehen, und eine unsignierte IPA wird erzeugt. [Bestätigter Build](https://github.com/Daniel6649/camera-bridge-ios/actions/runs/38259282862).
 
-Nicht abgeschlossen: vollständige Rekonstruktion aller App-Funktionen, Audio, USB-Verbindung, automatische Suche/Wiederverbindung und Fernsteuerung aller Kamera-Einstellungen. Auch Xcode-Kompilierung, iPhone-Ausführung und IPA-Signierung stehen aus. Dies ist ein Prototyp, kein vollständiger Ersatz der Original-App.
+Die Anmeldung ist anhand einer tatsächlichen Antwort des installierten Desktop-Clients bestätigt. Die vollständige Videoübertragung der finalen Implementierung ist noch nicht auf einem iPhone getestet. Ein früherer Test ohne die erforderliche Kontrollanmeldung zeigte nur das Wartebild; daraus folgt ausdrücklich keine bestätigte Videokompatibilität.
+
+Nicht abgeschlossen: vollständige Rekonstruktion aller App-Funktionen, Audio, USB-Verbindung, automatische Suche/Wiederverbindung und Fernsteuerung aller Kamera-Einstellungen. iPhone-Ausführung und IPA-Signierung für dein Gerät stehen aus. Dies ist ein Prototyp, kein vollständiger Ersatz der Original-App.
 
 ## Auf dem Mac starten
 
@@ -20,12 +22,10 @@ Ohne eigenen Mac: Die Anleitung `CLOUD-BUILD.md` beschreibt den vorbereiteten Gi
 4. Ein echtes iPhone als Ziel auswählen und **Run** drücken.
 5. Kamera zunächst lokal testen. Danach die lokale IP-Adresse des Windows-PCs eingeben und mit dem dort laufenden iVCam-Client testen. Der Desktop-Empfänger darf dabei nicht bereits mit einer anderen Kamera verbunden sein.
 
-Eine fertige IPA kann erst auf dem Mac mit gültiger Signierung erzeugt werden. Das Skript `ios/scripts/build-export.sh` übernimmt Archivierung und Export; `BUILD.md` erklärt die erforderlichen Angaben und Einschränkungen des Apple-Kontos.
+Die Cloud erzeugt eine unsignierte IPA; diese kann unter Windows mit Sideloadly für dein iPhone signiert werden. Alternativ übernimmt `ios/scripts/build-export.sh` einen regulären signierten Export auf dem Mac. `BUILD.md` erklärt die Schritte.
 
 ## Analyse
 
-- `analysis/ios-protocol-findings.md`: iOS-Seite mit ARM64-Adressen.
-- `analysis/desktop-findings.md`: Desktop-Seite mit x64-Adressen.
-- Die vollständigen lokalen Rohdaten liegen im Arbeitsordner, nicht im kleinen Mac-Paket.
+Das Projekt basiert auf statischer Analyse beider Programme und einem Kontrollanmeldungstest. Analyse-Rohdaten bleiben im lokalen Arbeitsordner; das Repository enthält die eigenen App-Quellen und Build-Skripte.
 
 Die Protokollanmeldung verwendet einen neutralen, nicht gekauften Status. Einschränkungen des Desktop-Clients bleiben erhalten.

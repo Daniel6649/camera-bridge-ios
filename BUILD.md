@@ -6,7 +6,7 @@ The experimental TCP sender implements the observed control greeting, desktop se
 
 ## Build on your Mac
 
-Requirements: Xcode 15 or later, an iPhone/iPad with iOS 15 or later, and an Apple account configured in Xcode. A real device is needed to verify the rear camera and hardware encoder.
+Requirements: Xcode 16.4 or later, an iPhone/iPad with iOS 15 or later, and an Apple account configured in Xcode for direct installation. Xcode 16.4 is the verified cloud compiler. A real device is needed to verify the camera and encoder. On iOS 17.4+ the encoder explicitly requires hardware acceleration; older iOS versions use VideoToolbox's default encoder selection.
 
 1. Copy the entire `ios` directory to your Mac.
 2. Open `ios/CameraBridge.xcodeproj` in Xcode. Select the CameraBridge target, set your development team under Signing & Capabilities, and choose a unique bundle identifier if provisioning requires it.
@@ -27,7 +27,7 @@ To compile the actual Swift transport module and check its metadata/header/AVC b
 bash ios/scripts/check-wire-format.sh
 ```
 
-These checks do not establish a successful video connection; they have not been executed on this Windows host.
+These checks passed on the GitHub macOS runner. They do not establish a successful iPhone video connection.
 
 To archive and export a signed development IPA with supported provisioning:
 
@@ -39,6 +39,6 @@ The script places the archive in `ios/build/CameraBridge.xcarchive` and the expo
 
 ## Validation boundary
 
-The source and project references were inspected on Windows; Info.plist XML was parsed. Xcode compilation, hardware encoding, provisioning, IPA export, and iVCam desktop interoperability have not been validated. This directory contains source only, not a built IPA.
+The source and project references were inspected on Windows; Info.plist XML was parsed. Xcode 16.4 device compilation, wire-format golden checks, ARM64 verification, and unsigned IPA packaging passed in GitHub Actions. The downloaded IPA ZIP integrity, bundle identifier, minimum iOS version and executable architecture were independently checked. iPhone execution, provisioning/signing and full iVCam desktop interoperability remain unvalidated.
 
 Protocol implementation uses the independently documented static evidence in the adjacent analysis directory. An actual connection/video test against the installed desktop version is still required before describing this app as compatible.
