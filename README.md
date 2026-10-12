@@ -10,7 +10,7 @@ Für USB: iPhone per Datenkabel anschließen, entsperren, diesem Computer vertra
 
 Implementiert sind Kamera-Vorschau, H.264-Encoding, USB-Verbindung, manuelle WLAN-Adresse, Bonjour-Suche und der rekonstruierte TCP-Verbindungsablauf. Für WLAN die Kamera stoppen, WLAN wählen und neu starten. Unterstützte Auflösungen und Bildraten hängen vom iPhone ab.
 
-Der GitHub-Build ist erfolgreich: Xcode 16.4 kompiliert die App für ARM64/iOS 15+, die Protokoll-Referenzprüfungen bestehen, und eine unsignierte IPA wird erzeugt. [Bestätigter Build](https://github.com/Daniel6649/camera-bridge-ios/actions/runs/38259282862).
+Der GitHub-Build für Version 0.3.0 ist erfolgreich: Xcode 16.4 kompiliert die App für ARM64/iOS 15+, die Protokoll-Referenzprüfungen einschließlich USB-Framing und fragmentierter Pakete bestehen, und eine unsignierte IPA wird erzeugt. [Bestätigter Build](https://github.com/Daniel6649/camera-bridge-ios/actions/runs/38266591235).
 
 Die Anmeldung ist anhand einer tatsächlichen Antwort des installierten Desktop-Clients bestätigt. Die vollständige Videoübertragung der finalen Implementierung ist noch nicht auf einem iPhone getestet. Ein früherer Test ohne die erforderliche Kontrollanmeldung zeigte nur das Wartebild; daraus folgt ausdrücklich keine bestätigte Videokompatibilität.
 
