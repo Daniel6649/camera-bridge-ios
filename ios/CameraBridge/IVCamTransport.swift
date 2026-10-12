@@ -174,7 +174,7 @@ final class IVCamTransport: @unchecked Sendable {
             guard ready, let socket = connection else { return }
             // Never drop half a frame; after dropping a frame resume at a keyframe.
             let reportStatus = statusRequest != 0 && keyframe && cameraStatus.count == 11
-            let needed = nals.count + (sentConfiguration ? 0 : 1) + (reportStatus ? 1 : 0)
+            let needed = 1 + (sentConfiguration ? 0 : 1) + (reportStatus ? 1 : 0)
             guard pending + needed <= maximumPending else { waitingForKeyframe = true; return }
             guard !waitingForKeyframe || keyframe else { return }
             waitingForKeyframe = false
@@ -185,12 +185,10 @@ final class IVCamTransport: @unchecked Sendable {
                 enqueue(Self.packet(type: 9, timestamp: 0, payload: configuration), socket: socket)
                 sentConfiguration = true
             }
-            for nal in nals {
-                var payload = Data([keyframe ? 0x17 : 0x27, 1, 0, 0, 0])
-                payload.appendBE(UInt32(nal.count))
-                payload.append(nal)
-                enqueue(Self.packet(type: 9, timestamp: timestamp, payload: payload), socket: socket)
-            }
+            // Desktop removes the outer block size, then converts the complete
+            // AVCC access unit's individual NAL lengths into Annex-B start codes.
+            let payload = Self.videoPayload(nals: nals, keyframe: keyframe)
+            enqueue(Self.packet(type: 9, timestamp: timestamp, payload: payload), socket: socket)
             if reportStatus {
                 var payload = Data()
                 for field in cameraStatus { payload.appendLE(field) }
@@ -326,6 +324,18 @@ final class IVCamTransport: @unchecked Sendable {
         var result = Data()
         for field in [UInt32(1), type, tag, UInt32(payload.count)] { result.appendBE(field) }
         result.append(payload)
+        return result
+    }
+
+    static func videoPayload(nals: [Data], keyframe: Bool) -> Data {
+        var accessUnit = Data()
+        for nal in nals {
+            accessUnit.appendBE(UInt32(nal.count))
+            accessUnit.append(nal)
+        }
+        var result = Data([keyframe ? 0x17 : 0x27, 1, 0, 0, 0])
+        result.appendBE(UInt32(accessUnit.count))
+        result.append(accessUnit)
         return result
     }
 

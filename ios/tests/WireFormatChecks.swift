@@ -18,6 +18,15 @@ struct WireFormatChecks {
         let packet = IVCamTransport.packet(type: 9, timestamp: 0x01020304, payload: config)
         precondition(packet.prefix(12) == hex("090000000403020118000000"))
         precondition(packet.dropFirst(12) == config)
+        // Video is a complete AVCC access unit inside an additional block size.
+        // The desktop converts lengths at payload+9, not the size at payload+5.
+        let video = IVCamTransport.videoPayload(nals: [hex("060102"), hex("65030405")], keyframe: true)
+        precondition(video == hex("17010000000000000f000000030601020000000465030405"))
+        precondition(IVCamTransport.videoPayload(nals: [hex("410102")], keyframe: false)
+            == hex("27010000000000000700000003410102"))
+        let framedVideo = IVCamTransport.usbFrame(type: 9, tag: 40,
+            payload: IVCamTransport.packet(type: 9, timestamp: 40, payload: video))
+        precondition(framedVideo.prefix(28) == hex("00000001000000090000002800000024090000002800000018000000"))
         let usbHello = IVCamTransport.usbFrame(type: 0x58, tag: 0x226a,
             payload: hex("88000000100000002000000000000000"))
         precondition(usbHello == hex("00000001000000580000226a0000001088000000100000002000000000000000"))
