@@ -3,12 +3,21 @@ import Network
 
 /// Independent implementation from static evidence. Device interoperability is
 /// unverified. All connection and packet state lives on `queue`.
+enum BridgeConnection: String, CaseIterable, Identifiable, Sendable {
+    case usb = "USB"
+    case wifi = "WLAN"
+    var id: String { rawValue }
+}
+
 final class IVCamTransport: @unchecked Sendable {
     var onStatus: (@Sendable (String) -> Void)?
     var onControl: (@Sendable (UInt32, UInt32) -> Void)?
     private let queue = DispatchQueue(label: "camera.bridge.transport")
     private var connection: NWConnection?
     private var browser: NWBrowser?
+    private var listener: NWListener?
+    private var mode = BridgeConnection.wifi
+    private var usbDecoder = USBFrameDecoder()
     private struct Settings: Sendable {
         let width: UInt32
         let height: UInt32
@@ -29,7 +38,7 @@ final class IVCamTransport: @unchecked Sendable {
     private var statusRequest: UInt32 = 0
     private let maximumPending = 32
 
-    func connect(host: String, port: UInt16 = 5895, width: UInt32, height: UInt32,
+    func connect(host: String, mode: BridgeConnection = .wifi, port: UInt16 = 5895, width: UInt32, height: UInt32,
                  fps: UInt32, bitrate: UInt32, name: String) {
         queue.async { [self] in
             close()
@@ -39,8 +48,11 @@ final class IVCamTransport: @unchecked Sendable {
                 onStatus?("Die PC-Portnummer ist ungültig.")
                 return
             }
+            self.mode = mode
             settings = Settings(width: width, height: height, fps: fps, bitrate: bitrate, name: name)
-            if host.isEmpty {
+            if mode == .usb {
+                listenUSB(generation: current)
+            } else if host.isEmpty {
                 discover(generation: current)
             } else {
                 open(endpoint: .hostPort(host: NWEndpoint.Host(host), port: endpointPort), generation: current)
@@ -74,34 +86,64 @@ final class IVCamTransport: @unchecked Sendable {
         }
     }
 
-    private func open(endpoint: NWEndpoint, generation current: UInt64) {
-            let socket = NWConnection(to: endpoint, using: .tcp)
-            connection = socket
-            socket.stateUpdateHandler = { [weak self] state in
+    private func listenUSB(generation current: UInt64) {
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 5895)
+        do {
+            let server = try NWListener(using: parameters)
+            listener = server
+            server.stateUpdateHandler = { [weak self] state in
                 guard let self, self.generation == current else { return }
                 switch state {
-                case .ready:
-                    // Neutral license state: no purchase/trial bits are forged.
-                    var greeting = Data()
-                    let greetingFields: [UInt32] = [0x88, 0x10, 0x20, 0]
-                    for field in greetingFields { greeting.appendLE(field) }
-                    socket.send(content: greeting, completion: .contentProcessed { [weak self] error in
-                        guard let self, self.generation == current else { return }
-                        if let error { self.fail(error.localizedDescription); return }
-                        self.onStatus?("PC verbunden – Videoeinstellungen werden abgestimmt …")
-                    })
-                    self.receiveControl(socket, generation: current)
-                case .failed(let error): self.fail(error.localizedDescription)
-                case .waiting(let error): self.onStatus?("Verbindung wartet: \(error.localizedDescription). Bitte PC-Adresse und Netzwerkzugriff prüfen.")
+                case .ready: self.onStatus?("USB bereit – iPhone per Kabel verbinden, diesem Computer vertrauen und iVCam am PC öffnen.")
+                case .failed(let error): self.fail("USB: \(error.localizedDescription)")
                 default: break
                 }
             }
-            socket.start(queue: queue)
-            onStatus?("Verbinde mit \(endpoint) …")
-            queue.asyncAfter(deadline: .now() + 10) { [weak self] in
-                guard let self, self.generation == current, !self.ready else { return }
-                self.onStatus?("PC-Verbindung noch nicht bereit. Bitte PC-Adresse, iVCam und lokalen Netzwerkzugriff prüfen.")
+            server.newConnectionHandler = { [weak self] socket in
+                guard let self, self.generation == current, self.connection == nil else { socket.cancel(); return }
+                self.activate(socket, generation: current)
             }
+            server.start(queue: queue)
+        } catch { fail("USB-Port konnte nicht geöffnet werden: \(error.localizedDescription)") }
+    }
+
+    private func open(endpoint: NWEndpoint, generation current: UInt64) {
+        activate(NWConnection(to: endpoint, using: .tcp), generation: current)
+        onStatus?("Verbinde mit \(endpoint) …")
+    }
+
+    private func activate(_ socket: NWConnection, generation current: UInt64) {
+        connection = socket
+        socket.stateUpdateHandler = { [weak self] state in
+            guard let self, self.generation == current else { return }
+            switch state {
+            case .ready:
+                var greeting = Data()
+                let fields: [UInt32] = [0x88, 0x10, 0x20, 0]
+                for field in fields { greeting.appendLE(field) }
+                self.transmit(greeting, type: 0x58, tag: 0x226a, socket: socket) { [weak self] error in
+                    guard let self, self.generation == current else { return }
+                    if let error { self.fail(error.localizedDescription); return }
+                    self.onStatus?("\(self.mode.rawValue) verbunden – Videoeinstellungen werden abgestimmt …")
+                }
+                if self.mode == .usb {
+                    self.transmit(Data([0x88, 0x10, 0x20, 0]), type: 0x58, tag: 0x226a, socket: socket) { _ in }
+                }
+                self.receiveControl(socket, generation: current)
+            case .failed(let error): self.fail(error.localizedDescription)
+            case .waiting(let error): self.onStatus?("Verbindung wartet: \(error.localizedDescription)")
+            default: break
+            }
+        }
+        socket.start(queue: queue)
+    }
+
+    private func transmit(_ payload: Data, type: UInt32, tag: UInt32, socket: NWConnection,
+                          completion: @escaping @Sendable (NWError?) -> Void) {
+        let wire = mode == .usb ? Self.usbFrame(type: type, tag: tag, payload: payload) : payload
+        socket.send(content: wire, completion: .contentProcessed(completion))
     }
 
     private func startMedia(generation current: UInt64) {
@@ -110,12 +152,12 @@ final class IVCamTransport: @unchecked Sendable {
         // The installed desktop reuses the negotiated socket for its media stream.
         let metadata = Self.handshake(width: settings.width, height: settings.height, fps: settings.fps,
             bitrate: settings.bitrate, name: settings.name)
-        socket.send(content: metadata, completion: .contentProcessed { [weak self] error in
+        transmit(metadata, type: 0x12, tag: 1, socket: socket) { [weak self] error in
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
-            self.onStatus?("Videodaten werden gesendet. Bitte das Bild im iVCam-Desktopfenster prüfen.")
-        })
+            self.onStatus?("\(self.mode.rawValue): Videodaten werden gesendet. Bitte das Bild im iVCam-Desktopfenster prüfen.")
+        }
     }
 
     func disconnect() { queue.async { [self] in close(); generation &+= 1 } }
@@ -140,7 +182,7 @@ final class IVCamTransport: @unchecked Sendable {
             let elapsed = max(0, (seconds - (frameBase ?? seconds)) * 1000)
             let timestamp = UInt32(truncatingIfNeeded: UInt64(elapsed))
             if !sentConfiguration {
-                enqueue(Self.packet(type: 9, timestamp: timestamp, payload: configuration), socket: socket)
+                enqueue(Self.packet(type: 9, timestamp: 0, payload: configuration), socket: socket)
                 sentConfiguration = true
             }
             for nal in nals {
@@ -161,17 +203,31 @@ final class IVCamTransport: @unchecked Sendable {
     private func enqueue(_ packet: Data, socket: NWConnection) {
         pending += 1
         let current = generation
-        socket.send(content: packet, completion: .contentProcessed { [weak self] error in
+        let innerType = packet.readLE(at: 0)
+        let type: UInt32 = innerType == 0x10 ? 0x58 : innerType
+        let tag: UInt32 = innerType == 9 ? packet.readLE(at: 4) : (innerType == 0x10 ? 0x2275 : 1)
+        transmit(packet, type: type, tag: tag, socket: socket) { [weak self] error in
             guard let self, self.generation == current else { return }
             self.pending = max(0, self.pending - 1)
             if let error { self.fail(error.localizedDescription) }
-        })
+        }
     }
 
     private func receiveControl(_ socket: NWConnection, generation current: UInt64) {
         socket.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, ended, error in
             guard let self, self.generation == current else { return }
-            if let data { self.receiveBuffer.append(data) }
+            if let data {
+                if self.mode == .usb {
+                    do {
+                        for payload in try self.usbDecoder.append(data) {
+                            guard payload.count >= 8, payload.readLE(at: 0) == 0x88 else {
+                                self.fail("Ungültiges USB-Steuerpaket."); return
+                            }
+                            self.receiveBuffer.append(payload)
+                        }
+                    } catch { self.fail(error.localizedDescription); return }
+                } else { self.receiveBuffer.append(data) }
+            }
             while self.receiveBuffer.count >= 8 {
                 guard self.receiveBuffer.readLE(at: 0) == 0x88 else {
                     self.fail("Unexpected desktop control header."); return
@@ -197,11 +253,11 @@ final class IVCamTransport: @unchecked Sendable {
                     var reply = Data()
                     let fields: [UInt32] = [0x88, 0x13, settings.width, settings.height, settings.fps, 0, 1, 0, 0, 0, 0, 0]
                     for field in fields { reply.appendLE(field) }
-                    socket.send(content: reply, completion: .contentProcessed { [weak self] error in
+                    self.transmit(reply, type: 0x58, tag: 0x226d, socket: socket) { [weak self] error in
                         guard let self, self.generation == current else { return }
                         if let error { self.fail(error.localizedDescription); return }
                         self.startMedia(generation: current)
-                    })
+                    }
                 } else if command == 0x21 {
                     self.statusRequest = value
                 } else if [UInt32(0x18), 0x19, 0x1A].contains(command) {
@@ -215,8 +271,23 @@ final class IVCamTransport: @unchecked Sendable {
         }
     }
 
-    private func fail(_ message: String) { close(); generation &+= 1; onStatus?("Übertragung gestoppt: \(message)") }
+    private func fail(_ message: String) {
+        let previousSettings = settings
+        let retryUSB = mode == .usb && listener != nil && connection != nil
+        close()
+        generation &+= 1
+        onStatus?("USB/Verbindung getrennt: \(message)")
+        if retryUSB {
+            settings = previousSettings
+            listenUSB(generation: generation)
+        }
+    }
     private func close() {
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
+        listener?.cancel()
+        listener = nil
+        usbDecoder = USBFrameDecoder()
         browser?.stateUpdateHandler = nil
         browser?.browseResultsChangedHandler = nil
         browser?.cancel()
@@ -251,6 +322,13 @@ final class IVCamTransport: @unchecked Sendable {
         return data
     }
 
+    static func usbFrame(type: UInt32, tag: UInt32, payload: Data) -> Data {
+        var result = Data()
+        for field in [UInt32(1), type, tag, UInt32(payload.count)] { result.appendBE(field) }
+        result.append(payload)
+        return result
+    }
+
     static func packet(type: UInt32, timestamp: UInt32, payload: Data) -> Data {
         var result = Data()
         result.appendLE(type); result.appendLE(timestamp); result.appendLE(UInt32(payload.count))
@@ -267,7 +345,33 @@ final class IVCamTransport: @unchecked Sendable {
     }
 }
 
+/// Handles fragmented and coalesced PeerTalk frames; bounds allocation from a peer.
+struct USBFrameDecoder {
+    private var buffer = Data()
+    enum DecodeError: LocalizedError {
+        case invalidVersion, oversized
+        var errorDescription: String? { "Ungültiger oder zu großer USB-Rahmen." }
+    }
+    mutating func append(_ bytes: Data) throws -> [Data] {
+        buffer.append(bytes)
+        var payloads: [Data] = []
+        while buffer.count >= 16 {
+            guard buffer.readBE(at: 0) == 1 else { throw DecodeError.invalidVersion }
+            let length = Int(buffer.readBE(at: 12))
+            guard length <= 1_048_576 else { throw DecodeError.oversized }
+            guard buffer.count >= 16 + length else { break }
+            payloads.append(buffer.subdata(in: (buffer.startIndex + 16)..<(buffer.startIndex + 16 + length)))
+            buffer.removeFirst(16 + length)
+        }
+        return payloads
+    }
+}
+
 private extension Data {
+    func readBE(at offset: Int) -> UInt32 {
+        let base = startIndex + offset
+        return (0..<4).reduce(UInt32(0)) { ($0 << 8) | UInt32(self[base + $1]) }
+    }
     mutating func appendLE(_ value: UInt32) {
         for shift in stride(from: 0, through: 24, by: 8) { append(UInt8(truncatingIfNeeded: value >> shift)) }
     }

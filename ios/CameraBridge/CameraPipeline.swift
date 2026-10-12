@@ -30,6 +30,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var capturedFrames: UInt64 = 0
     private var requestedFPS = 30
     private var requestedHost = ""
+    private var requestedConnection = BridgeConnection.usb
 
     func setBattery(percent: Int, charging: Bool) {
         queue.async { [self] in batteryStatus = UInt32(max(0, min(100, percent))) + (charging ? 100 : 0) }
@@ -43,7 +44,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
-    func start(resolution: CaptureResolution, fps: Int, host: String = "", frontCamera: Bool = false) {
+    func start(resolution: CaptureResolution, fps: Int, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false) {
         queue.async { [self] in
             guard !active else { return }
             generation &+= 1
@@ -64,6 +65,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.capturedFrames = 0
                         self.requestedFPS = fps
                         self.requestedHost = host
+                        self.requestedConnection = mode
                         self.onProgress?(0, 0)
                         self.onCaptureProgress?(0)
                         self.active = true
@@ -187,7 +189,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
             do {
                 try createEncoder(width: width, height: height, fps: requestedFPS)
-                transport.connect(host: requestedHost, width: UInt32(width), height: UInt32(height),
+                transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
                     fps: UInt32(requestedFPS), bitrate: width >= 1920 ? 6_000_000 : 3_000_000, name: "Camera Bridge")
                 onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) Bilder/s.", true)
             } catch {

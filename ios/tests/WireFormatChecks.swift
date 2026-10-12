@@ -18,6 +18,30 @@ struct WireFormatChecks {
         let packet = IVCamTransport.packet(type: 9, timestamp: 0x01020304, payload: config)
         precondition(packet.prefix(12) == hex("090000000403020118000000"))
         precondition(packet.dropFirst(12) == config)
+        let usbHello = IVCamTransport.usbFrame(type: 0x58, tag: 0x226a,
+            payload: hex("88000000100000002000000000000000"))
+        precondition(usbHello == hex("00000001000000580000226a0000001088000000100000002000000000000000"))
+        let usbMedia = IVCamTransport.usbFrame(type: 9, tag: 0x01020304, payload: packet)
+        precondition(usbMedia.prefix(16) == hex("00000001000000090102030400000024"))
+        precondition(usbMedia.dropFirst(16) == packet)
+        do {
+            var decoder = USBFrameDecoder()
+            let first = try decoder.append(usbHello.prefix(7))
+            precondition(first.isEmpty)
+            var rest = Data(usbHello.dropFirst(7)); rest.append(usbMedia)
+            let decoded = try decoder.append(rest)
+            precondition(decoded == [Data(usbHello.dropFirst(16)), packet])
+            var invalid = USBFrameDecoder()
+            do {
+                _ = try invalid.append(hex("00000002000000880000001000000000"))
+                preconditionFailure("Invalid USB version was accepted")
+            } catch USBFrameDecoder.DecodeError.invalidVersion { }
+            var oversized = USBFrameDecoder()
+            do {
+                _ = try oversized.append(hex("00000001000000880000001000100001"))
+                preconditionFailure("Oversized USB frame was accepted")
+            } catch USBFrameDecoder.DecodeError.oversized { }
+        } catch { preconditionFailure("USB decoder failed: \(error)") }
         print("Wire-format golden checks passed. This does not verify desktop video interoperability.")
     }
 

@@ -10,7 +10,8 @@ final class CameraModel: ObservableObject {
     @Published var status = "Bereit."
     @Published var running = false
     @Published var desktopHost = ""
-    @Published var networkStatus = "PC wird nach dem Kamerastart gesucht."
+    @Published var connectionMode = BridgeConnection.usb
+    @Published var networkStatus = "USB wird nach dem Kamerastart bereitgestellt."
     @Published var capturedFrames: UInt64 = 0
     @Published var encodedFrames: UInt64 = 0
     @Published var encodedBytes: UInt64 = 0
@@ -45,7 +46,7 @@ final class CameraModel: ObservableObject {
         let device = UIDevice.current
         pipeline.setBattery(percent: Int(max(0, device.batteryLevel) * 100),
             charging: device.batteryState == .charging || device.batteryState == .full)
-        pipeline.start(resolution: resolution, fps: fps, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), frontCamera: frontCamera)
+        pipeline.start(resolution: resolution, fps: fps, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera)
     }
 
     func stop() { torch = false; pipeline.stop() }
@@ -65,9 +66,17 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             Text("Camera Bridge").font(.title2.bold())
             Text("iPhone-Kamera für deinen PC").foregroundStyle(.secondary)
+            Picker("Verbindung", selection: $model.connectionMode) {
+                ForEach(BridgeConnection.allCases) { mode in Text(mode.rawValue).tag(mode) }
+            }.pickerStyle(.segmented).disabled(model.running)
+            if model.connectionMode == .usb {
+                Text("iPhone per USB-Kabel verbinden, entsperren und diesem Computer vertrauen. iVCam am PC öffnen. Keine PC-Adresse nötig.")
+                    .font(.callout)
+            } else {
             TextField("PC-Adresse (leer = automatisch suchen)", text: $model.desktopHost)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder).disabled(model.running)
+            }
             HStack {
                 Picker("Auflösung", selection: $model.resolution) {
                     ForEach(CaptureResolution.allCases) { resolution in
@@ -91,7 +100,7 @@ struct ContentView: View {
             }
             Text(model.status).font(.callout)
             Text(model.networkStatus).font(.callout).foregroundStyle(.secondary)
-            Text("Experimentell – noch nicht auf dem iPhone getestet. Ton und USB sind noch nicht verfügbar.")
+            Text("Experimentell – USB ist implementiert; die Bildübertragung muss am Gerät geprüft werden. Ton ist noch nicht verfügbar.")
                 .font(.footnote).foregroundStyle(.orange)
             DisclosureGroup("Diagnose") {
                 Text(model.status).font(.caption)

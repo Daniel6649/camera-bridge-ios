@@ -4,9 +4,11 @@ Eigenständig geschriebener Swift-Client auf Basis der statischen Analyse von iV
 
 ## Stand
 
-Version 0.2.0 startet die Kamera beim Öffnen, hält Start/Stop sichtbar und zeigt Aufnahme- und Verbindungsstatus getrennt. Der Encoder wird aus den tatsächlichen Kamerabuffer-Abmessungen eingerichtet; ein Encoderfehler stoppt die Vorschau nicht. Ohne manuelle Desktop-Adresse sucht die App den iVCam-Dienst per Bonjour. Kamerazugriff und lokaler Netzwerkzugriff müssen auf dem iPhone erlaubt werden.
+Version 0.3.0 startet mit USB als voreingestellter Verbindung. Das iPhone lauscht auf dem lokalen Port 5895; der vorhandene Windows-iVCam-Client verbindet sich über Apples USB-Multiplexing. Anmeldung, Einstellungen, Metadaten und Video werden mit dem rekonstruierten PeerTalk-Rahmen übertragen. Die Kamera startet beim Öffnen, Start/Stop bleiben sichtbar, und Aufnahme- und Verbindungsstatus werden getrennt angezeigt. Der Encoder wird aus den tatsächlichen Kamerabuffer-Abmessungen eingerichtet; ein Encoderfehler stoppt die Vorschau nicht.
 
-Implementiert sind Kamera-Vorschau, H.264-Encoding, manuelle Desktop-Adresse, Bonjour-Suche und der rekonstruierte TCP-Verbindungsablauf. Unterstützte Auflösungen und Bildraten hängen vom iPhone ab.
+Für USB: iPhone per Datenkabel anschließen, entsperren, diesem Computer vertrauen und den iVCam-Desktop öffnen. Die App im Vordergrund lassen. Eine PC-Adresse ist nicht nötig. Der vorhandene Apple-USB-Dienst hat am Entwicklungs-PC bereits ein USB-Gerät erkannt. Die tatsächliche Bildübertragung der neuen App über USB ist noch nicht bestätigt.
+
+Implementiert sind Kamera-Vorschau, H.264-Encoding, USB-Verbindung, manuelle WLAN-Adresse, Bonjour-Suche und der rekonstruierte TCP-Verbindungsablauf. Für WLAN die Kamera stoppen, WLAN wählen und neu starten. Unterstützte Auflösungen und Bildraten hängen vom iPhone ab.
 
 Der GitHub-Build ist erfolgreich: Xcode 16.4 kompiliert die App für ARM64/iOS 15+, die Protokoll-Referenzprüfungen bestehen, und eine unsignierte IPA wird erzeugt. [Bestätigter Build](https://github.com/Daniel6649/camera-bridge-ios/actions/runs/38259282862).
 
@@ -14,7 +16,7 @@ Die Anmeldung ist anhand einer tatsächlichen Antwort des installierten Desktop-
 
 Bekannter offener Fehler: Auch unabhängige Tests mit erzeugtem H.264-Testbild, verschiedenen Startsequenzen und 720p/30 fps zeigten weiterhin das Wartebild der virtuellen Desktop-Kamera. Ein erfolgreicher Verbindungsstatus allein bestätigt keine Videoübertragung. Die neue Version verbessert Vorschau, Suche und Diagnose; die vollständige Desktop-Interoperabilität ist nicht bestätigt.
 
-Nicht abgeschlossen: vollständige Rekonstruktion aller App-Funktionen, Audio, USB-Verbindung, automatische Wiederverbindung und Fernsteuerung aller Kamera-Einstellungen. Die Änderungen der Version 0.2.0 müssen auf dem iPhone geprüft werden. Dies ist ein Prototyp, kein vollständiger Ersatz der Original-App.
+Nicht abgeschlossen: vollständige Rekonstruktion aller App-Funktionen, Audio und Fernsteuerung aller Kamera-Einstellungen. Nach einer geschlossenen USB-Verbindung wartet die App erneut auf den Desktop. Version 0.3.0 muss auf dem iPhone geprüft werden. Dies ist ein Prototyp, kein vollständiger Ersatz der Original-App.
 
 ## Auf dem Mac starten
 
