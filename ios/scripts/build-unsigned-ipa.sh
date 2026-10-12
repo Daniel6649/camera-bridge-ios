@@ -16,7 +16,7 @@ APP_PATH="$OUTPUT_DIR/unsigned/Build/Products/Release-iphoneos/CameraBridge.app"
 test -d "$APP_PATH"
 test -f "$APP_PATH/Info.plist"
 test -x "$APP_PATH/CameraBridge"
-/usr/bin/lipo -verify_arch arm64 "$APP_PATH/CameraBridge"
+/usr/bin/lipo "$APP_PATH/CameraBridge" -verify_arch arm64
 
 # Fresh staging directory avoids stale payloads and does not erase prior builds.
 STAGING_DIR="$(mktemp -d "$OUTPUT_DIR/ipa-staging.XXXXXX")"
