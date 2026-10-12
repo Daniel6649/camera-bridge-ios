@@ -148,7 +148,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func createEncoder(width: Int32, height: Int32, fps: Int) throws {
-        let specification: CFDictionary = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary
+        var specification: CFDictionary?
+        if #available(iOS 17.4, *) {
+            specification = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary
+        }
         let result = VTCompressionSessionCreate(allocator: kCFAllocatorDefault, width: width, height: height,
             codecType: kCMVideoCodecType_H264, encoderSpecification: specification, imageBufferAttributes: nil,
             compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &encoder)
