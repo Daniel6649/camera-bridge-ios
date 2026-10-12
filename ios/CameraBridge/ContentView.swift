@@ -10,7 +10,8 @@ final class CameraModel: ObservableObject {
     @Published var status = "Bereit."
     @Published var running = false
     @Published var desktopHost = ""
-    @Published var networkStatus = "Enter a desktop address to attempt the experimental TCP connection."
+    @Published var networkStatus = "PC wird nach dem Kamerastart gesucht."
+    @Published var capturedFrames: UInt64 = 0
     @Published var encodedFrames: UInt64 = 0
     @Published var encodedBytes: UInt64 = 0
     let pipeline = CameraPipeline()
@@ -29,6 +30,9 @@ final class CameraModel: ObservableObject {
                 self?.encodedFrames = frames
                 self?.encodedBytes = bytes
             }
+        }
+        pipeline.onCaptureProgress = { [weak self] frames in
+            Task { @MainActor [weak self] in self?.capturedFrames = frames }
         }
         pipeline.onNetworkStatus = { [weak self] message in
             Task { @MainActor [weak self] in self?.networkStatus = message }
@@ -61,7 +65,7 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             Text("Camera Bridge").font(.title2.bold())
             Text("iPhone-Kamera für deinen PC").foregroundStyle(.secondary)
-            TextField("PC-Adresse (optional)", text: $model.desktopHost)
+            TextField("PC-Adresse (leer = automatisch suchen)", text: $model.desktopHost)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder).disabled(model.running)
             HStack {
@@ -86,20 +90,25 @@ struct ContentView: View {
                     .onChange(of: model.torch) { model.setTorch($0) }
             }
             Text(model.status).font(.callout)
+            Text(model.networkStatus).font(.callout).foregroundStyle(.secondary)
             Text("Experimentell – noch nicht auf dem iPhone getestet. Ton und USB sind noch nicht verfügbar.")
                 .font(.footnote).foregroundStyle(.orange)
-            HStack {
-                Button("Kamera starten") { model.start() }
-                    .disabled(model.running)
-                Button("Stoppen") { model.stop() }
-                    .disabled(!model.running)
-            }.buttonStyle(.borderedProminent)
             DisclosureGroup("Diagnose") {
                 Text(model.status).font(.caption)
                 Text(model.networkStatus).font(.caption)
-                Text("\(model.encodedFrames) Bilder · \(model.encodedBytes) Bytes").font(.caption.monospacedDigit())
+                Text("Kamera: \(model.capturedFrames) Bilder · Encoder: \(model.encodedFrames) Bilder · \(model.encodedBytes) Bytes").font(.caption.monospacedDigit())
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")").font(.caption)
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Button("Kamera starten") { model.start() }.disabled(model.running)
+                Button("Stoppen") { model.stop() }.disabled(!model.running)
+            }
+            .buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity)
+            .background(.regularMaterial)
+        }
+        .task { if !model.running { model.start() } }
         .padding()
         }
         .onChange(of: scenePhase) { phase in
@@ -116,10 +125,18 @@ struct CameraPreview: UIViewRepresentable {
         view.previewLayer.videoGravity = .resizeAspect
         return view
     }
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        if uiView.previewLayer.session !== session { uiView.previewLayer.session = session }
+    }
 }
 
 final class PreviewView: UIView {
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if let connection = previewLayer.connection, connection.isVideoOrientationSupported {
+            connection.videoOrientation = .landscapeRight
+        }
+    }
 }

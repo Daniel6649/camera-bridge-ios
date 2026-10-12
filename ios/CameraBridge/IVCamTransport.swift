@@ -8,6 +8,7 @@ final class IVCamTransport: @unchecked Sendable {
     var onControl: (@Sendable (UInt32, UInt32) -> Void)?
     private let queue = DispatchQueue(label: "camera.bridge.transport")
     private var connection: NWConnection?
+    private var browser: NWBrowser?
     private struct Settings: Sendable {
         let width: UInt32
         let height: UInt32
@@ -34,12 +35,47 @@ final class IVCamTransport: @unchecked Sendable {
             close()
             generation &+= 1
             let current = generation
-            guard let endpointPort = NWEndpoint.Port(rawValue: port), !host.isEmpty else {
-                onStatus?("Enter the desktop's IP address or hostname.")
+            guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+                onStatus?("Die PC-Portnummer ist ungültig.")
                 return
             }
             settings = Settings(width: width, height: height, fps: fps, bitrate: bitrate, name: name)
-            let socket = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+            if host.isEmpty {
+                discover(generation: current)
+            } else {
+                open(endpoint: .hostPort(host: NWEndpoint.Host(host), port: endpointPort), generation: current)
+            }
+        }
+    }
+
+    private func discover(generation current: UInt64) {
+        let search = NWBrowser(for: .bonjour(type: "_e2esoft_ivcam._tcp", domain: nil), using: .tcp)
+        browser = search
+        search.stateUpdateHandler = { [weak self] state in
+            guard let self, self.generation == current else { return }
+            switch state {
+            case .failed(let error): self.fail("PC-Suche fehlgeschlagen: \(error.localizedDescription)")
+            case .waiting(let error): self.onStatus?("PC-Suche wartet: \(error.localizedDescription). Bitte lokalen Netzwerkzugriff erlauben.")
+            default: break
+            }
+        }
+        search.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self, self.generation == current, self.connection == nil,
+                  let result = results.sorted(by: { String(describing: $0.endpoint) < String(describing: $1.endpoint) }).first else { return }
+            search.cancel()
+            self.browser = nil
+            self.open(endpoint: result.endpoint, generation: current)
+        }
+        search.start(queue: queue)
+        onStatus?("Suche iVCam auf dem PC im lokalen Netz …")
+        queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self, self.generation == current, self.connection == nil else { return }
+            self.onStatus?("Kein PC gefunden. iVCam öffnen, Netzwerkzugriff erlauben oder die PC-Adresse eintragen und erneut starten.")
+        }
+    }
+
+    private func open(endpoint: NWEndpoint, generation current: UInt64) {
+            let socket = NWConnection(to: endpoint, using: .tcp)
             connection = socket
             socket.stateUpdateHandler = { [weak self] state in
                 guard let self, self.generation == current else { return }
@@ -52,17 +88,20 @@ final class IVCamTransport: @unchecked Sendable {
                     socket.send(content: greeting, completion: .contentProcessed { [weak self] error in
                         guard let self, self.generation == current else { return }
                         if let error { self.fail(error.localizedDescription); return }
-                        self.onStatus?("Desktop connected; negotiating video settings…")
+                        self.onStatus?("PC verbunden – Videoeinstellungen werden abgestimmt …")
                     })
                     self.receiveControl(socket, generation: current)
                 case .failed(let error): self.fail(error.localizedDescription)
-                case .waiting(let error): self.onStatus?("Connection waiting: \(error.localizedDescription)")
+                case .waiting(let error): self.onStatus?("Verbindung wartet: \(error.localizedDescription). Bitte PC-Adresse und Netzwerkzugriff prüfen.")
                 default: break
                 }
             }
             socket.start(queue: queue)
-            onStatus?("Connecting to \(host):\(port)…")
-        }
+            onStatus?("Verbinde mit \(endpoint) …")
+            queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self, self.generation == current, !self.ready else { return }
+                self.onStatus?("PC-Verbindung noch nicht bereit. Bitte PC-Adresse, iVCam und lokalen Netzwerkzugriff prüfen.")
+            }
     }
 
     private func startMedia(generation current: UInt64) {
@@ -75,7 +114,7 @@ final class IVCamTransport: @unchecked Sendable {
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
-            self.onStatus?("Sending H.264. Confirm the live image in the desktop application.")
+            self.onStatus?("Videodaten werden gesendet. Bitte das Bild im iVCam-Desktopfenster prüfen.")
         })
     }
 
@@ -176,8 +215,12 @@ final class IVCamTransport: @unchecked Sendable {
         }
     }
 
-    private func fail(_ message: String) { close(); generation &+= 1; onStatus?("Transmission stopped: \(message)") }
+    private func fail(_ message: String) { close(); generation &+= 1; onStatus?("Übertragung gestoppt: \(message)") }
     private func close() {
+        browser?.stateUpdateHandler = nil
+        browser?.browseResultsChangedHandler = nil
+        browser?.cancel()
+        browser = nil
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil

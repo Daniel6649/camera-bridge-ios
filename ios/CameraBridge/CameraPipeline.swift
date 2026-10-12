@@ -15,6 +15,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     let session = AVCaptureSession()
     var onStatus: (@Sendable (String, Bool) -> Void)?
     var onProgress: (@Sendable (UInt64, UInt64) -> Void)?
+    var onCaptureProgress: (@Sendable (UInt64) -> Void)?
     var onNetworkStatus: (@Sendable (String) -> Void)?
     private let transport = IVCamTransport()
     private let queue = DispatchQueue(label: "camera.bridge.capture")
@@ -26,6 +27,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encodingFailed = false
     private var captureDevice: AVCaptureDevice?
     private var batteryStatus: UInt32 = 0
+    private var capturedFrames: UInt64 = 0
+    private var requestedFPS = 30
+    private var requestedHost = ""
 
     func setBattery(percent: Int, charging: Bool) {
         queue.async { [self] in batteryStatus = UInt32(max(0, min(100, percent))) + (charging ? 100 : 0) }
@@ -57,14 +61,19 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.frames = 0
                         self.bytes = 0
                         self.encodingFailed = false
+                        self.capturedFrames = 0
+                        self.requestedFPS = fps
+                        self.requestedHost = host
                         self.onProgress?(0, 0)
+                        self.onCaptureProgress?(0)
                         self.active = true
                         self.session.startRunning()
-                        if !host.isEmpty {
-                            self.transport.connect(host: host, width: UInt32(resolution.width), height: UInt32(resolution.height),
-                                fps: UInt32(fps), bitrate: resolution == .hd1080 ? 6_000_000 : 3_000_000, name: "Camera Bridge")
-                        } else { self.onNetworkStatus?("Local encoding only; no desktop address was entered.") }
-                        self.onStatus?("Kamera läuft mit \(fps) Bildern pro Sekunde.", true)
+                        self.onStatus?("Kamera gestartet – warte auf das erste Bild.", true)
+                        self.queue.asyncAfter(deadline: .now() + 5) {
+                            guard self.generation == requestGeneration, self.active,
+                                  self.capturedFrames == 0 else { return }
+                            self.onStatus?("Die Kamera liefert keine Bilder. Bitte Kamerazugriff prüfen und erneut starten.", true)
+                        }
                     } catch {
                         self.tearDownEncoder()
                         self.onStatus?(error.localizedDescription, false)
@@ -144,16 +153,11 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             connection.videoOrientation = .landscapeRight
         }
         tearDownEncoder()
-        try createEncoder(width: resolution.width, height: resolution.height, fps: fps)
     }
 
     private func createEncoder(width: Int32, height: Int32, fps: Int) throws {
-        var specification: CFDictionary?
-        if #available(iOS 17.4, *) {
-            specification = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary
-        }
         let result = VTCompressionSessionCreate(allocator: kCFAllocatorDefault, width: width, height: height,
-            codecType: kCMVideoCodecType_H264, encoderSpecification: specification, imageBufferAttributes: nil,
+            codecType: kCMVideoCodecType_H264, encoderSpecification: nil, imageBufferAttributes: nil,
             compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &encoder)
         guard result == noErr, let encoder else { throw BridgeError.status("Create hardware encoder", result) }
         let settings: [(CFString, CFTypeRef)] = [
@@ -173,7 +177,27 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard active, let encoder, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard active, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        capturedFrames &+= 1
+        if capturedFrames == 1 || capturedFrames % 30 == 0 { onCaptureProgress?(capturedFrames) }
+        // Preview is independent of encoding; configure from actual camera buffers.
+        guard !encodingFailed else { return }
+        if encoder == nil {
+            let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
+            let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
+            do {
+                try createEncoder(width: width, height: height, fps: requestedFPS)
+                transport.connect(host: requestedHost, width: UInt32(width), height: UInt32(height),
+                    fps: UInt32(requestedFPS), bitrate: width >= 1920 ? 6_000_000 : 3_000_000, name: "Camera Bridge")
+                onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) Bilder/s.", true)
+            } catch {
+                encodingFailed = true
+                tearDownEncoder()
+                onStatus?("Kameravorschau läuft; Videoübertragung nicht verfügbar: \(error.localizedDescription)", true)
+                return
+            }
+        }
+        guard let encoder else { return }
         let currentGeneration = generation
         let result = VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixelBuffer,
             presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
@@ -182,7 +206,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 let size = encoded.map { CMSampleBufferGetTotalSampleSize($0) } ?? 0
                 let frame = encoded.flatMap(Self.extractFrame)
                 self.queue.async {
-                    guard self.active, self.generation == currentGeneration else { return }
+                    guard self.active, !self.encodingFailed, self.generation == currentGeneration else { return }
                     guard status == noErr else { self.failEncoding(status); return }
                     guard size > 0 else { return }
                     self.frames &+= 1
@@ -200,12 +224,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func failEncoding(_ status: OSStatus) {
         guard !encodingFailed else { return }
         encodingFailed = true
-        active = false
-        turnOffTorch()
-        session.stopRunning()
         tearDownEncoder()
         transport.disconnect()
-        onStatus?("H.264 encoding failed (\(status)).", false)
+        onStatus?("Kameravorschau läuft; Video-Encoder meldet Fehler \(status). Bitte erneut starten.", true)
     }
 
     private func tearDownEncoder() {
