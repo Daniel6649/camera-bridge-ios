@@ -1,0 +1,51 @@
+name: Build Camera Bridge IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: camera-bridge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Show compiler version
+        run: xcodebuild -version
+
+      - name: Check reconstructed wire format
+        run: bash ios/scripts/check-wire-format.sh
+
+      - name: Compile iOS app and package unsigned IPA
+        run: bash ios/scripts/build-unsigned-ipa.sh
+
+      - name: Save IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: CameraBridge-unsigned-IPA
+          path: ios/build/export/CameraBridge-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: CameraBridge-build-logs
+          path: ios/build/unsigned-build.log
+          if-no-files-found: ignore
+          retention-days: 7

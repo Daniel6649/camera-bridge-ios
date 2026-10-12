@@ -1,0 +1,7 @@
+ios/build/
+analysis/
+*.ipa
+*.xcarchive/
+*.xcuserstate
+xcuserdata/
+.DS_Store
