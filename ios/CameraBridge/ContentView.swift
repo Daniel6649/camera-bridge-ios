@@ -9,6 +9,9 @@ final class CameraModel: ObservableObject {
     @Published var availableResolutions: [CaptureResolution] = [.hd720]
     @Published var availableFPS = [30]
     @Published var configuring = false
+    @Published var zoom = 1.0
+    @Published var minimumZoom = 1.0
+    @Published var maximumZoom = 1.0
     @Published var frontCamera = false
     @Published var torch = false
     @Published var status = "Bereit."
@@ -27,6 +30,8 @@ final class CameraModel: ObservableObject {
         fps = saved.object(forKey: "captureFPS") == nil ? 30 : saved.integer(forKey: "captureFPS")
         let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 3.0 : saved.double(forKey: "captureBitrateMbps")
         bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 3.0
+        let savedZoom = saved.object(forKey: "captureZoom") == nil ? 1.0 : saved.double(forKey: "captureZoom")
+        zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
         refreshFormats()
         UIDevice.current.isBatteryMonitoringEnabled = true
         pipeline.onStatus = { [weak self] message, active in
@@ -48,6 +53,13 @@ final class CameraModel: ObservableObject {
         }
         pipeline.onNetworkStatus = { [weak self] message in
             Task { @MainActor [weak self] in self?.networkStatus = message }
+        }
+        pipeline.onZoom = { [weak self] factor, minimum, maximum in
+            Task { @MainActor [weak self] in
+                self?.minimumZoom = minimum
+                self?.maximumZoom = maximum
+                self?.zoom = factor
+            }
         }
     }
 
@@ -76,11 +88,15 @@ final class CameraModel: ObservableObject {
         pipeline.setBattery(percent: Int(max(0, device.batteryLevel) * 100),
             charging: device.batteryState == .charging || device.batteryState == .full)
         torch = false
-        pipeline.start(resolution: resolution, fps: fps, bitrate: Int((bitrateMbps * 1_000_000).rounded()), host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera, replaceCurrent: replaceCurrent)
+        pipeline.start(resolution: resolution, fps: fps, bitrate: Int((bitrateMbps * 1_000_000).rounded()), zoom: zoom, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera, replaceCurrent: replaceCurrent)
     }
 
     func stop() { torch = false; pipeline.stop() }
     func setTorch(_ enabled: Bool) { pipeline.setTorch(enabled) }
+    func setZoom(_ factor: Double) {
+        UserDefaults.standard.set(factor, forKey: "captureZoom")
+        pipeline.setZoom(factor)
+    }
 }
 
 struct ContentView: View {
@@ -136,6 +152,25 @@ struct ContentView: View {
                 Text("Startet Kamera und USB-Verbindung kurz neu. Die gewählten Werte werden gespeichert.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Zoom")
+                    Spacer()
+                    Text("\(model.zoom, specifier: "%.1f")×").monospacedDigit()
+                    Button("1×") { model.zoom = min(model.maximumZoom, max(model.minimumZoom, 1)) }
+                }
+                // Logarithmic travel keeps small zoom changes precise on cameras
+                // with a large digital-zoom range.
+                Slider(value: Binding(
+                    get: { log2(max(model.minimumZoom, min(model.maximumZoom, model.zoom))) },
+                    set: { model.zoom = pow(2, $0) }
+                ), in: log2(max(0.01, model.minimumZoom))...log2(max(model.minimumZoom + 0.001, model.maximumZoom)))
+                    .accessibilityLabel("Kamerazoom")
+                Text("Wirkt sofort auf Vorschau und übertragenes Video.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .disabled(!model.running || model.configuring || model.maximumZoom <= model.minimumZoom)
+            .onChange(of: model.zoom) { model.setZoom($0) }
             HStack {
                 Picker("Kamera", selection: $model.frontCamera) {
                     Text("Rückkamera").tag(false)

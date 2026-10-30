@@ -23,6 +23,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onProgress: (@Sendable (UInt64, UInt64) -> Void)?
     var onCaptureProgress: (@Sendable (UInt64) -> Void)?
     var onNetworkStatus: (@Sendable (String) -> Void)?
+    var onZoom: (@Sendable (Double, Double, Double) -> Void)?
     private let transport = IVCamTransport()
     private let queue = DispatchQueue(label: "camera.bridge.capture")
     private var encoder: VTCompressionSession?
@@ -63,7 +64,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
-    func start(resolution: CaptureResolution, fps: Int, bitrate: Int = 3_000_000, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false, replaceCurrent: Bool = false) {
+    func start(resolution: CaptureResolution, fps: Int, bitrate: Int = 3_000_000, zoom: Double = 1, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false, replaceCurrent: Bool = false) {
         queue.async { [self] in
             guard !active || replaceCurrent else { return }
             guard (500_000...50_000_000).contains(bitrate), (1...120).contains(fps) else {
@@ -89,6 +90,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     }
                     do {
                         try self.configure(resolution: resolution, fps: fps, frontCamera: frontCamera)
+                        self.applyZoom(zoom)
                         self.frames = 0
                         self.bytes = 0
                         self.encodingFailed = false
@@ -140,6 +142,26 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 else { device.torchMode = .off }
             } catch { onStatus?("Kameralicht konnte nicht geändert werden: \(error.localizedDescription)", true) }
         }
+    }
+
+    func setZoom(_ factor: Double) {
+        queue.async { [self] in
+            guard active else { return }
+            applyZoom(factor)
+        }
+    }
+
+    private func applyZoom(_ factor: Double) {
+        guard factor.isFinite, let device = captureDevice else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            let minimum = device.minAvailableVideoZoomFactor
+            let maximum = device.maxAvailableVideoZoomFactor
+            device.cancelVideoZoomRamp()
+            device.videoZoomFactor = min(maximum, max(minimum, CGFloat(factor)))
+            onZoom?(Double(device.videoZoomFactor), Double(minimum), Double(maximum))
+        } catch { onStatus?("Zoom konnte nicht geändert werden: \(error.localizedDescription)", active) }
     }
 
     private func turnOffTorch() {

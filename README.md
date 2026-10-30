@@ -8,6 +8,8 @@ Version 0.4.0 ergänzt konfigurierbare Videoeinstellungen auf dem iPhone: 480p, 
 
 Während der Übertragung können die Werte geändert und mit **Videoeinstellungen übernehmen** angewendet werden. Kamera, Encoder und Verbindung werden dazu neu gestartet. Die angewendeten Werte bleiben beim nächsten App-Start erhalten. Der Encoder und die USB/WLAN-Anmeldung verwenden dieselbe gewählte Bitrate. Die tatsächliche Geräteunterstützung und Bildübertragung müssen weiterhin auf dem iPhone geprüft werden.
 
+Der zusätzliche Zoom-Regler wirkt sofort auf die laufende Kamera, damit auf Vorschau und übertragenes Bild. Er verwendet die tatsächlichen Zoomgrenzen des aktiven Kameraformats und eine logarithmische Skala für feinere Bedienung. **1×** setzt den Zoom zurück; der letzte Wert wird beim nächsten Start wiederhergestellt und an den dann verfügbaren Bereich angepasst.
+
 Version 0.3.1 startet mit USB als voreingestellter Verbindung. Das iPhone lauscht auf dem lokalen Port 5895; der vorhandene Windows-iVCam-Client verbindet sich über Apples USB-Multiplexing. Anmeldung, Einstellungen, Metadaten und Video werden mit dem rekonstruierten PeerTalk-Rahmen übertragen. Die Kamera startet beim Öffnen, Start/Stop bleiben sichtbar, und Aufnahme- und Verbindungsstatus werden getrennt angezeigt. Der Encoder wird aus den tatsächlichen Kamerabuffer-Abmessungen eingerichtet; ein Encoderfehler stoppt die Vorschau nicht.
 
 Für USB: iPhone per Datenkabel anschließen, entsperren, diesem Computer vertrauen und den iVCam-Desktop öffnen. Die App im Vordergrund lassen. Eine PC-Adresse ist nicht nötig. Der vorhandene Apple-USB-Dienst hat am Entwicklungs-PC bereits ein USB-Gerät erkannt. Die tatsächliche Bildübertragung der neuen App über USB ist noch nicht bestätigt.
