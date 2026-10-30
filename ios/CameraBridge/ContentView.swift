@@ -5,6 +5,10 @@ import SwiftUI
 final class CameraModel: ObservableObject {
     @Published var resolution = CaptureResolution.hd720
     @Published var fps = 30
+    @Published var bitrateMbps = 3.0
+    @Published var availableResolutions: [CaptureResolution] = [.hd720]
+    @Published var availableFPS = [30]
+    @Published var configuring = false
     @Published var frontCamera = false
     @Published var torch = false
     @Published var status = "Bereit."
@@ -18,11 +22,18 @@ final class CameraModel: ObservableObject {
     let pipeline = CameraPipeline()
 
     init() {
+        let saved = UserDefaults.standard
+        resolution = saved.string(forKey: "captureResolution").flatMap(CaptureResolution.init(rawValue:)) ?? .hd720
+        fps = saved.object(forKey: "captureFPS") == nil ? 30 : saved.integer(forKey: "captureFPS")
+        let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 3.0 : saved.double(forKey: "captureBitrateMbps")
+        bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 3.0
+        refreshFormats()
         UIDevice.current.isBatteryMonitoringEnabled = true
         pipeline.onStatus = { [weak self] message, active in
             Task { @MainActor [weak self] in
                 self?.status = message
                 self?.running = active
+                self?.configuring = false
                 if !active { self?.torch = false }
             }
         }
@@ -40,13 +51,32 @@ final class CameraModel: ObservableObject {
         }
     }
 
-    func start() {
+    func refreshFormats() {
+        availableResolutions = CaptureResolution.allCases.filter {
+            !CameraPipeline.supportedFrameRates(resolution: $0, frontCamera: frontCamera).isEmpty
+        }
+        if !availableResolutions.contains(resolution), let fallback = availableResolutions.first {
+            resolution = availableResolutions.contains(.hd720) ? .hd720 : fallback
+        }
+        availableFPS = CameraPipeline.supportedFrameRates(resolution: resolution, frontCamera: frontCamera)
+        if !availableFPS.contains(fps) { fps = availableFPS.contains(30) ? 30 : availableFPS.first ?? 30 }
+    }
+
+    func start(replaceCurrent: Bool = false) {
+        refreshFormats()
+        guard !availableFPS.isEmpty else { status = "Die gewählte Kamera bietet kein unterstütztes Videoformat an."; return }
+        let saved = UserDefaults.standard
+        saved.set(resolution.rawValue, forKey: "captureResolution")
+        saved.set(fps, forKey: "captureFPS")
+        saved.set(bitrateMbps, forKey: "captureBitrateMbps")
+        configuring = true
         running = true // Locks configuration while permission/configuration is pending.
         status = "Kamerazugriff wird angefragt…"
         let device = UIDevice.current
         pipeline.setBattery(percent: Int(max(0, device.batteryLevel) * 100),
             charging: device.batteryState == .charging || device.batteryState == .full)
-        pipeline.start(resolution: resolution, fps: fps, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera)
+        torch = false
+        pipeline.start(resolution: resolution, fps: fps, bitrate: Int((bitrateMbps * 1_000_000).rounded()), host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera, replaceCurrent: replaceCurrent)
     }
 
     func stop() { torch = false; pipeline.stop() }
@@ -79,21 +109,39 @@ struct ContentView: View {
             }
             HStack {
                 Picker("Auflösung", selection: $model.resolution) {
-                    ForEach(CaptureResolution.allCases) { resolution in
+                    ForEach(model.availableResolutions) { resolution in
                         Text(resolution.rawValue).tag(resolution)
                     }
                 }
                 Picker("Bildrate", selection: $model.fps) {
-                    Text("15 fps").tag(15)
-                    Text("30 fps").tag(30)
-                    Text("60 fps").tag(60)
+                    ForEach(model.availableFPS, id: \.self) { fps in Text("\(fps) FPS").tag(fps) }
                 }
-            }.disabled(model.running)
+            }.disabled(model.configuring)
+                .onChange(of: model.resolution) { _ in model.refreshFormats() }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Zielbitrate")
+                    Spacer()
+                    Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s").monospacedDigit()
+                }
+                Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                    .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
+                Stepper("Bitrate fein einstellen", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                Text("Durchschnittliche H.264-Zielbitrate. Die tatsächliche Datenrate schwankt mit dem Bildinhalt.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }.disabled(model.configuring)
+            if model.running {
+                Button("Videoeinstellungen übernehmen") { model.start(replaceCurrent: true) }
+                    .buttonStyle(.borderedProminent).disabled(model.configuring)
+                Text("Startet Kamera und USB-Verbindung kurz neu. Die gewählten Werte werden gespeichert.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             HStack {
                 Picker("Kamera", selection: $model.frontCamera) {
                     Text("Rückkamera").tag(false)
                     Text("Frontkamera").tag(true)
                 }.disabled(model.running)
+                    .onChange(of: model.frontCamera) { _ in model.refreshFormats() }
                 Toggle("Licht", isOn: $model.torch)
                     .disabled(!model.running || model.frontCamera)
                     .onChange(of: model.torch) { model.setTorch($0) }
@@ -111,7 +159,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button("Kamera starten") { model.start() }.disabled(model.running)
+                Button("Kamera starten") { model.start() }.disabled(model.running || model.availableFPS.isEmpty)
                 Button("Stoppen") { model.stop() }.disabled(!model.running)
             }
             .buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity)

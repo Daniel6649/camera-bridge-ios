@@ -2,11 +2,17 @@ import AVFoundation
 import VideoToolbox
 
 enum CaptureResolution: String, CaseIterable, Identifiable, Sendable {
+    case sd480 = "640 × 480"
     case hd720 = "1280 × 720"
     case hd1080 = "1920 × 1080"
+    case uhd4K = "3840 × 2160"
     var id: String { rawValue }
-    var width: Int32 { self == .hd720 ? 1280 : 1920 }
-    var height: Int32 { self == .hd720 ? 720 : 1080 }
+    var width: Int32 {
+        switch self { case .sd480: return 640; case .hd720: return 1280; case .hd1080: return 1920; case .uhd4K: return 3840 }
+    }
+    var height: Int32 {
+        switch self { case .sd480: return 480; case .hd720: return 720; case .hd1080: return 1080; case .uhd4K: return 2160 }
+    }
 }
 
 /// Every mutable capture/encoder field is confined to `queue`.
@@ -29,6 +35,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var batteryStatus: UInt32 = 0
     private var capturedFrames: UInt64 = 0
     private var requestedFPS = 30
+    private var requestedBitrate = 3_000_000
     private var requestedHost = ""
     private var requestedConnection = BridgeConnection.usb
 
@@ -44,9 +51,32 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
-    func start(resolution: CaptureResolution, fps: Int, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false) {
+    static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video,
+            position: frontCamera ? .front : .back) else { return [] }
+        let ranges = device.formats.filter {
+            let size = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
+            return size.width == resolution.width && size.height == resolution.height
+        }.flatMap { $0.videoSupportedFrameRateRanges }
+        return [15, 24, 25, 30, 50, 60, 90, 120].filter { fps in
+            ranges.contains { Double(fps) >= $0.minFrameRate && Double(fps) <= $0.maxFrameRate }
+        }
+    }
+
+    func start(resolution: CaptureResolution, fps: Int, bitrate: Int = 3_000_000, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false, replaceCurrent: Bool = false) {
         queue.async { [self] in
-            guard !active else { return }
+            guard !active || replaceCurrent else { return }
+            guard (500_000...50_000_000).contains(bitrate), (1...120).contains(fps) else {
+                self.onStatus?("Ungültige Bildrate oder Bitrate (0,5–50 Mbit/s).", active)
+                return
+            }
+            if replaceCurrent {
+                active = false
+                turnOffTorch()
+                if session.isRunning { session.stopRunning() }
+                tearDownEncoder()
+                transport.disconnect()
+            }
             generation &+= 1
             let requestGeneration = generation
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -64,6 +94,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.encodingFailed = false
                         self.capturedFrames = 0
                         self.requestedFPS = fps
+                        self.requestedBitrate = bitrate
                         self.requestedHost = host
                         self.requestedConnection = mode
                         self.onProgress?(0, 0)
@@ -157,7 +188,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         tearDownEncoder()
     }
 
-    private func createEncoder(width: Int32, height: Int32, fps: Int) throws {
+    private func createEncoder(width: Int32, height: Int32, fps: Int, bitrate: Int) throws {
         let result = VTCompressionSessionCreate(allocator: kCFAllocatorDefault, width: width, height: height,
             codecType: kCMVideoCodecType_H264, encoderSpecification: nil, imageBufferAttributes: nil,
             compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &encoder)
@@ -168,7 +199,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             (kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Main_AutoLevel),
             (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: fps)),
             (kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: fps * 2)),
-            (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: width == 1920 ? 6_000_000 : 3_000_000))
+            (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: bitrate))
         ]
         for (key, value) in settings {
             let status = VTSessionSetProperty(encoder, key: key, value: value)
@@ -188,10 +219,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
             let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
             do {
-                try createEncoder(width: width, height: height, fps: requestedFPS)
+                try createEncoder(width: width, height: height, fps: requestedFPS, bitrate: requestedBitrate)
                 transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
-                    fps: UInt32(requestedFPS), bitrate: width >= 1920 ? 6_000_000 : 3_000_000, name: "Camera Bridge")
-                onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) Bilder/s.", true)
+                    fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge")
+                onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) FPS, \(Double(requestedBitrate) / 1_000_000) Mbit/s Zielbitrate.", true)
             } catch {
                 encodingFailed = true
                 tearDownEncoder()

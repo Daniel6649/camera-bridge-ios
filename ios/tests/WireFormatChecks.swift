@@ -13,6 +13,13 @@ struct WireFormatChecks {
         precondition(greeting.subdata(in: 44..<48) == hex("41004100"))
         precondition(greeting.subdata(in: 280..<288) == Data(repeating: 0, count: 8))
         precondition(greeting.subdata(in: 24..<44) == Data(repeating: 0, count: 20))
+        // A custom stream must advertise the chosen size, FPS and bits/second,
+        // including its reconnect record; it must not retain the 720p defaults.
+        let custom = IVCamTransport.handshake(width: 3840, height: 2160, fps: 60,
+            bitrate: 12_500_000, name: "Camera Bridge")
+        precondition(custom.subdata(in: 8..<24) == hex("000f0000700800003c00000020bcbe00"))
+        precondition(custom.subdata(in: 288..<292) == hex("000f7008"))
+        precondition(custom.subdata(in: 348..<352) == hex("3c000000"))
         let config = IVCamTransport.configuration(sps: hex("6764001f"), pps: hex("68ee3c80"))
         precondition(config == hex("17000000000164001fffe100046764001f01000468ee3c80"))
         let packet = IVCamTransport.packet(type: 9, timestamp: 0x01020304, payload: config)
