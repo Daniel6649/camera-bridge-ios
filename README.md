@@ -4,6 +4,8 @@ Eigenständig geschriebener Swift-Client auf Basis der statischen Analyse von iV
 
 ## Stand
 
+Version 0.5.0 verbindet die eigenen Einstellungen mit Receiver 0.3.0 auf Windows. Unterstützte Auflösungen/FPS, Bitrate und Zoomgrenzen werden über USB/WLAN gemeldet; PC-Befehle konfigurieren Kamera und Encoder beziehungsweise den Zoom tatsächlich. Die App antwortet mit einer Anfrage-ID und den gesetzten Werten. Formatwechsel starten Kamera und Verbindung neu. Die erweiterten Einstellungen des Original-iVCam-Protokolls sind weiterhin nicht vollständig implementiert; die eigene Erweiterung steuert diese vier Videoeinstellungen.
+
 Version 0.4.0 ergänzt konfigurierbare Videoeinstellungen auf dem iPhone: 480p, 720p, 1080p und 4K sowie 15/24/25/30/50/60/90/120 FPS werden nur angeboten, wenn die gewählte Kamera die jeweilige Kombination unterstützt. Die H.264-Zielbitrate ist in Schritten von 0,5 Mbit/s zwischen 0,5 und 50 Mbit/s einstellbar. Es handelt sich um eine durchschnittliche Zielbitrate, keine konstante oder harte Obergrenze ([Apple VideoToolbox](https://developer.apple.com/documentation/videotoolbox/kvtcompressionpropertykey_averagebitrate)).
 
 Während der Übertragung können die Werte geändert und mit **Videoeinstellungen übernehmen** angewendet werden. Kamera, Encoder und Verbindung werden dazu neu gestartet. Die angewendeten Werte bleiben beim nächsten App-Start erhalten. Der Encoder und die USB/WLAN-Anmeldung verwenden dieselbe gewählte Bitrate. Die tatsächliche Geräteunterstützung und Bildübertragung müssen weiterhin auf dem iPhone geprüft werden.
