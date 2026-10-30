@@ -24,6 +24,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onCaptureProgress: (@Sendable (UInt64) -> Void)?
     var onNetworkStatus: (@Sendable (String) -> Void)?
     var onZoom: (@Sendable (Double, Double, Double) -> Void)?
+    var onConfiguration: (@Sendable (CaptureResolution, Int, Int) -> Void)?
     private let transport = IVCamTransport()
     private let queue = DispatchQueue(label: "camera.bridge.capture")
     private var encoder: VTCompressionSession?
@@ -39,6 +40,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var requestedBitrate = 3_000_000
     private var requestedHost = ""
     private var requestedConnection = BridgeConnection.usb
+    private var requestedFrontCamera = false
+    private var currentWidth = 1280
+    private var currentHeight = 720
+    private var configurationRequestID: String?
 
     func setBattery(percent: Int, charging: Bool) {
         queue.async { [self] in batteryStatus = UInt32(max(0, min(100, percent))) + (charging ? 100 : 0) }
@@ -49,6 +54,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         transport.onStatus = { [weak self] message in self?.onNetworkStatus?(message) }
         transport.onControl = { [weak self] command, value in
             self?.onNetworkStatus?("Desktop control \(command), value \(value) received (remote controls are not implemented).")
+        }
+        transport.onBridgeControl = { [weak self] request in
+            self?.queue.async { [weak self] in self?.handleBridgeRequest(request) }
         }
     }
 
@@ -64,7 +72,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
-    func start(resolution: CaptureResolution, fps: Int, bitrate: Int = 3_000_000, zoom: Double = 1, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false, replaceCurrent: Bool = false) {
+    func start(resolution: CaptureResolution, fps: Int, bitrate: Int = 3_000_000, zoom: Double = 1, host: String = "", mode: BridgeConnection = .usb, frontCamera: Bool = false, replaceCurrent: Bool = false, requestID: String? = nil) {
         queue.async { [self] in
             guard !active || replaceCurrent else { return }
             guard (500_000...50_000_000).contains(bitrate), (1...120).contains(fps) else {
@@ -79,6 +87,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 transport.disconnect()
             }
             generation &+= 1
+            configurationRequestID = requestID
             let requestGeneration = generation
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
@@ -99,6 +108,8 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.requestedBitrate = bitrate
                         self.requestedHost = host
                         self.requestedConnection = mode
+                        self.requestedFrontCamera = frontCamera
+                        self.onConfiguration?(resolution, fps, bitrate)
                         self.onProgress?(0, 0)
                         self.onCaptureProgress?(0)
                         self.active = true
@@ -111,6 +122,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         }
                     } catch {
                         self.tearDownEncoder()
+                        self.transport.publishBridgeState(self.bridgeManifest(requestID: requestID, error: error.localizedDescription))
                         self.onStatus?(error.localizedDescription, false)
                     }
                 }
@@ -148,6 +160,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         queue.async { [self] in
             guard active else { return }
             applyZoom(factor)
+            transport.publishBridgeState(bridgeManifest())
         }
     }
 
@@ -162,6 +175,44 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             device.videoZoomFactor = min(maximum, max(minimum, CGFloat(factor)))
             onZoom?(Double(device.videoZoomFactor), Double(minimum), Double(maximum))
         } catch { onStatus?("Zoom konnte nicht geändert werden: \(error.localizedDescription)", active) }
+    }
+
+    private func handleBridgeRequest(_ request: BridgeRequest) {
+        guard active else { return }
+        if request.action == "zoom" {
+            guard let factor = request.zoom, factor.isFinite, let device = captureDevice,
+                  factor >= Double(device.minAvailableVideoZoomFactor), factor <= Double(device.maxAvailableVideoZoomFactor) else {
+                transport.publishBridgeState(bridgeManifest(requestID: request.id, error: "Zoom außerhalb des Kamerabereichs.")); return
+            }
+            applyZoom(factor)
+            transport.publishBridgeState(bridgeManifest(requestID: request.id))
+            return
+        }
+        guard let width = request.width, let height = request.height,
+              let resolution = CaptureResolution.allCases.first(where: { Int($0.width) == width && Int($0.height) == height }),
+              let fps = request.fps, Self.supportedFrameRates(resolution: resolution, frontCamera: requestedFrontCamera).contains(fps),
+              let bitrate = request.bitrate, (500_000...50_000_000).contains(bitrate) else {
+            transport.publishBridgeState(bridgeManifest(requestID: request.id, error: "Videoformat oder Bitrate wird von dieser Kamera nicht unterstützt.")); return
+        }
+        start(resolution: resolution, fps: fps, bitrate: bitrate,
+            zoom: Double(captureDevice?.videoZoomFactor ?? 1), host: requestedHost,
+            mode: requestedConnection, frontCamera: requestedFrontCamera, replaceCurrent: true, requestID: request.id)
+    }
+
+    private func bridgeManifest(requestID: String? = nil, error: String? = nil) -> Data {
+        let formats: [[String: Any]] = CaptureResolution.allCases.compactMap { resolution in
+            let fps = Self.supportedFrameRates(resolution: resolution, frontCamera: requestedFrontCamera)
+            guard !fps.isEmpty else { return nil }
+            return ["width": Int(resolution.width), "height": Int(resolution.height), "fps": fps]
+        }
+        var state: [String: Any] = ["protocol": "camera-bridge/1", "formats": formats,
+            "width": currentWidth, "height": currentHeight, "fps": requestedFPS, "bitrate": requestedBitrate,
+            "zoom": Double(captureDevice?.videoZoomFactor ?? 1),
+            "minimumZoom": Double(captureDevice?.minAvailableVideoZoomFactor ?? 1),
+            "maximumZoom": Double(captureDevice?.maxAvailableVideoZoomFactor ?? 1)]
+        if let requestID { state["requestID"] = requestID }
+        if let error { state["error"] = error }
+        return (try? JSONSerialization.data(withJSONObject: state)) ?? Data()
     }
 
     private func turnOffTorch() {
@@ -242,8 +293,12 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
             do {
                 try createEncoder(width: width, height: height, fps: requestedFPS, bitrate: requestedBitrate)
+                currentWidth = Int(width)
+                currentHeight = Int(height)
                 transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
-                    fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge")
+                    fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge",
+                    bridgeState: bridgeManifest(requestID: configurationRequestID))
+                configurationRequestID = nil
                 onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) FPS, \(Double(requestedBitrate) / 1_000_000) Mbit/s Zielbitrate.", true)
             } catch {
                 encodingFailed = true

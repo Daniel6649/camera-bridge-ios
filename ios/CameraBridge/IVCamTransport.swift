@@ -1,6 +1,17 @@
 import Foundation
 import Network
 
+struct BridgeRequest: Decodable, Sendable {
+    enum InvalidRequest: Error { case invalid }
+    let id: String
+    let action: String
+    let width: Int?
+    let height: Int?
+    let fps: Int?
+    let bitrate: Int?
+    let zoom: Double?
+}
+
 /// Independent implementation from static evidence. Device interoperability is
 /// unverified. All connection and packet state lives on `queue`.
 enum BridgeConnection: String, CaseIterable, Identifiable, Sendable {
@@ -12,6 +23,8 @@ enum BridgeConnection: String, CaseIterable, Identifiable, Sendable {
 final class IVCamTransport: @unchecked Sendable {
     var onStatus: (@Sendable (String) -> Void)?
     var onControl: (@Sendable (UInt32, UInt32) -> Void)?
+    var onBridgeControl: (@Sendable (BridgeRequest) -> Void)?
+    private var bridgeState: Data?
     private let queue = DispatchQueue(label: "camera.bridge.transport")
     private var connection: NWConnection?
     private var browser: NWBrowser?
@@ -39,7 +52,7 @@ final class IVCamTransport: @unchecked Sendable {
     private let maximumPending = 32
 
     func connect(host: String, mode: BridgeConnection = .wifi, port: UInt16 = 5895, width: UInt32, height: UInt32,
-                 fps: UInt32, bitrate: UInt32, name: String) {
+                 fps: UInt32, bitrate: UInt32, name: String, bridgeState: Data? = nil) {
         queue.async { [self] in
             close()
             generation &+= 1
@@ -50,6 +63,7 @@ final class IVCamTransport: @unchecked Sendable {
             }
             self.mode = mode
             settings = Settings(width: width, height: height, fps: fps, bitrate: bitrate, name: name)
+            self.bridgeState = bridgeState
             if mode == .usb {
                 listenUSB(generation: current)
             } else if host.isEmpty {
@@ -156,6 +170,9 @@ final class IVCamTransport: @unchecked Sendable {
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
+            if let state = self.bridgeState {
+                self.enqueue(Self.packet(type: 0x10, timestamp: 0x00010003, payload: state), socket: socket)
+            }
             self.onStatus?("\(self.mode.rawValue): Videodaten werden gesendet. Bitte das Bild im iVCam-Desktopfenster prüfen.")
         }
     }
@@ -231,8 +248,13 @@ final class IVCamTransport: @unchecked Sendable {
                     self.fail("Unexpected desktop control header."); return
                 }
                 let command = self.receiveBuffer.readLE(at: 4)
+                if command == 0x30 && self.receiveBuffer.count < 12 { break }
                 let length: Int
                 switch command {
+                case 0x30:
+                    let bodyLength = self.receiveBuffer.readLE(at: 8)
+                    guard bodyLength > 0, bodyLength <= 4096 else { self.fail("Ungültige Camera-Bridge-Steuerlänge."); return }
+                    length = 12 + Int(bodyLength)
                 case 0x10: length = 80
                 case 0x11: length = 20
                 case 0x13: length = 36
@@ -244,7 +266,13 @@ final class IVCamTransport: @unchecked Sendable {
                 }
                 guard self.receiveBuffer.count >= length else { break }
                 let value = length >= 12 ? self.receiveBuffer.readLE(at: 8) : 0
-                if command == 0x10 {
+                if command == 0x30 {
+                    do {
+                        let base = self.receiveBuffer.startIndex
+                        let request = try Self.bridgeRequest(self.receiveBuffer.subdata(in: (base + 12)..<(base + length)))
+                        self.onBridgeControl?(request)
+                    } catch { self.fail("Ungültiger Camera-Bridge-Befehl."); return }
+                } else if command == 0x10 {
                     guard value > 0, value <= 65535 else { self.fail("Invalid negotiated media port."); return }
                     // The stream reuses this socket; advertised port is for a later connection.
                 } else if command == 0x11, let settings = self.settings {
@@ -271,12 +299,14 @@ final class IVCamTransport: @unchecked Sendable {
 
     private func fail(_ message: String) {
         let previousSettings = settings
+        let previousBridgeState = bridgeState
         let retryUSB = mode == .usb && listener != nil && connection != nil
         close()
         generation &+= 1
         onStatus?("USB/Verbindung getrennt: \(message)")
         if retryUSB {
             settings = previousSettings
+            bridgeState = previousBridgeState
             listenUSB(generation: generation)
         }
     }
@@ -294,6 +324,7 @@ final class IVCamTransport: @unchecked Sendable {
         connection?.cancel()
         connection = nil
         settings = nil
+        bridgeState = nil
         mediaStarted = false
         ready = false
         pending = 0
@@ -318,6 +349,22 @@ final class IVCamTransport: @unchecked Sendable {
         data.writeLE((width & 0xFFFF) | ((height & 0xFFFF) << 16), at: 288)
         data.writeLE(fps, at: 348)
         return data
+    }
+
+    func publishBridgeState(_ data: Data) {
+        queue.async { [self] in
+            bridgeState = data
+            if ready, let socket = connection {
+                enqueue(Self.packet(type: 0x10, timestamp: 0x00010003, payload: data), socket: socket)
+            }
+        }
+    }
+
+    static func bridgeRequest(_ data: Data) throws -> BridgeRequest {
+        let request = try JSONDecoder().decode(BridgeRequest.self, from: data)
+        guard !request.id.isEmpty, request.id.utf8.count <= 80,
+              ["configure", "zoom"].contains(request.action) else { throw BridgeRequest.InvalidRequest.invalid }
+        return request
     }
 
     static func usbFrame(type: UInt32, tag: UInt32, payload: Data) -> Data {

@@ -61,6 +61,17 @@ final class CameraModel: ObservableObject {
                 self?.zoom = factor
             }
         }
+        pipeline.onConfiguration = { [weak self] resolution, fps, bitrate in
+            Task { @MainActor [weak self] in
+                self?.resolution = resolution
+                self?.fps = fps
+                self?.bitrateMbps = Double(bitrate) / 1_000_000
+                let saved = UserDefaults.standard
+                saved.set(resolution.rawValue, forKey: "captureResolution")
+                saved.set(fps, forKey: "captureFPS")
+                saved.set(Double(bitrate) / 1_000_000, forKey: "captureBitrateMbps")
+            }
+        }
     }
 
     func refreshFormats() {

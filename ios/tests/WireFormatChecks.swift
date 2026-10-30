@@ -20,6 +20,16 @@ struct WireFormatChecks {
         precondition(custom.subdata(in: 8..<24) == hex("000f0000700800003c00000020bcbe00"))
         precondition(custom.subdata(in: 288..<292) == hex("000f7008"))
         precondition(custom.subdata(in: 348..<352) == hex("3c000000"))
+        do {
+            let request = try IVCamTransport.bridgeRequest(Data(#"{"id":"pc-1","action":"configure","width":1920,"height":1080,"fps":60,"bitrate":8500000}"#.utf8))
+            precondition(request.id == "pc-1" && request.width == 1920 && request.fps == 60 && request.bitrate == 8_500_000)
+            let zoom = try IVCamTransport.bridgeRequest(Data(#"{"id":"pc-2","action":"zoom","zoom":2.5}"#.utf8))
+            precondition(zoom.zoom == 2.5)
+            do {
+                _ = try IVCamTransport.bridgeRequest(Data(#"{"id":"pc-3","action":"unknown"}"#.utf8))
+                preconditionFailure("Unknown control action accepted")
+            } catch BridgeRequest.InvalidRequest.invalid { }
+        } catch { preconditionFailure("Desktop command decode failed: \(error)") }
         let config = IVCamTransport.configuration(sps: hex("6764001f"), pps: hex("68ee3c80"))
         precondition(config == hex("17000000000164001fffe100046764001f01000468ee3c80"))
         let packet = IVCamTransport.packet(type: 9, timestamp: 0x01020304, payload: config)
