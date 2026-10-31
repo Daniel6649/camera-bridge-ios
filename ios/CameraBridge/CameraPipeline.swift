@@ -61,6 +61,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var orientationChange: DispatchWorkItem?
     private var forceKeyframe = true
     private var runtimeObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    private var interruptionEndedObserver: NSObjectProtocol?
+    private var interruptionReason: Int?
 
     func setBattery(percent: Int, charging: Bool) {
         queue.async { [self] in batteryStatus = UInt32(max(0, min(100, percent))) + (charging ? 100 : 0) }
@@ -81,12 +84,41 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         runtimeObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] _ in
             self?.queue.async { [weak self] in
                 guard let self, self.active else { return }
+                if !self.session.isRunning && !self.session.isInterrupted { self.session.startRunning() }
+            }
+        }
+        interruptionObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) { [weak self] notification in
+            let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue ?? 0
+            self?.queue.async { [weak self] in
+                guard let self, self.active else { return }
+                self.interruptionReason = reason
+                let message: String
+                switch reason {
+                case 1: message = "iOS pausiert die Kamera im Hintergrund. Camera Bridge wieder öffnen."
+                case 3: message = "Eine andere App verwendet die Kamera. Diese schließen und Camera Bridge wieder öffnen."
+                case 4: message = "iOS blockiert die Kamera wegen einer Vordergrund-Unterbrechung (Code 4). Andere Video-Fenster schließen. Bleibt der Fehler trotz Vollbild bestehen, das iPhone neu starten."
+                case 5: message = "iOS pausiert die Kamera wegen hoher Systembelastung oder Temperatur. Bitte kurz warten."
+                default: message = "iOS hat die Kamera unterbrochen (Code \(reason)). Warte auf Freigabe …"
+                }
+                self.onStatus?(message, true)
+            }
+        }
+        interruptionEndedObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: nil) { [weak self] _ in
+            self?.queue.async { [weak self] in
+                guard let self, self.active else { return }
+                self.interruptionReason = nil
                 if !self.session.isRunning { self.session.startRunning() }
+                self.forceKeyframe = true
+                self.onStatus?("iOS hat die Kamera wieder freigegeben. Warte auf Livebild …", true)
             }
         }
     }
 
-    deinit { if let runtimeObserver { NotificationCenter.default.removeObserver(runtimeObserver) } }
+    deinit {
+        for observer in [runtimeObserver, interruptionObserver, interruptionEndedObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     func setOrientation(_ orientation: BridgeOrientation) {
         queue.async { [self] in
@@ -164,12 +196,13 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.onProgress?(0, 0)
                         self.onCaptureProgress?(0)
                         self.active = true
+                        self.interruptionReason = nil
                         self.session.startRunning()
                         self.onStatus?("Kamera gestartet – warte auf das erste Bild.", true)
                         self.queue.asyncAfter(deadline: .now() + 5) {
                             guard self.generation == requestGeneration, self.active,
-                                  self.capturedFrames == 0 else { return }
-                            self.onStatus?("Die Kamera liefert keine Bilder. Bitte Kamerazugriff prüfen und erneut starten.", true)
+                                  self.capturedFrames == 0, self.interruptionReason == nil else { return }
+                            self.onStatus?("Kamera liefert noch keine Bilder. Sitzung läuft: \(self.session.isRunning), von iOS unterbrochen: \(self.session.isInterrupted).", true)
                         }
                     } catch {
                         self.tearDownEncoder()
@@ -290,6 +323,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.beginConfiguration()
         defer { session.commitConfiguration() }
+        if #available(iOS 16.0, *), session.isMultitaskingCameraAccessSupported {
+            session.isMultitaskingCameraAccessEnabled = true
+        }
         session.inputs.forEach { session.removeInput($0) }
         session.outputs.forEach { session.removeOutput($0) }
         session.sessionPreset = .inputPriority
