@@ -93,7 +93,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         encodingFailed = false
         tearDownEncoder()
         transport.disconnect()
-        onStatus?(orientation.isPortrait ? "Wechsle ins Hochformat …" : "Wechsle ins Querformat …", true)
+        onStatus?(orientation.isPortrait ? "Wechsle ins Hochformat â€¦" : "Wechsle ins Querformat â€¦", true)
     }
 
     static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
