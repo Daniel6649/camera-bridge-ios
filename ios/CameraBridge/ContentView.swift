@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor
 final class CameraModel: ObservableObject {
+    @Published var orientation = BridgeOrientation.portrait
+    @Published var bitrateMode = "custom"
     @Published var resolution = CaptureResolution.hd720
     @Published var fps = 30
     @Published var bitrateMbps = 3.0
@@ -30,6 +32,7 @@ final class CameraModel: ObservableObject {
         fps = saved.object(forKey: "captureFPS") == nil ? 30 : saved.integer(forKey: "captureFPS")
         let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 3.0 : saved.double(forKey: "captureBitrateMbps")
         bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 3.0
+        bitrateMode = Self.bitratePresets.first(where: { $0.value == bitrateMbps })?.key ?? "custom"
         let savedZoom = saved.object(forKey: "captureZoom") == nil ? 1.0 : saved.double(forKey: "captureZoom")
         zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
         refreshFormats()
@@ -65,6 +68,9 @@ final class CameraModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.resolution = resolution
                 self?.fps = fps
+                if self?.bitrateMbps != Double(bitrate) / 1_000_000 {
+                    self?.bitrateMode = Self.bitratePresets.first(where: { $0.value == Double(bitrate) / 1_000_000 })?.key ?? "custom"
+                }
                 self?.bitrateMbps = Double(bitrate) / 1_000_000
                 let saved = UserDefaults.standard
                 saved.set(resolution.rawValue, forKey: "captureResolution")
@@ -72,6 +78,23 @@ final class CameraModel: ObservableObject {
                 saved.set(Double(bitrate) / 1_000_000, forKey: "captureBitrateMbps")
             }
         }
+    }
+
+    static let bitratePresets: [String: Double] = ["low": 3, "medium": 10, "high": 25]
+    func selectBitrate(_ mode: String) {
+        if let value = Self.bitratePresets[mode] { bitrateMbps = value }
+    }
+    func updateOrientation() {
+        let value: BridgeOrientation
+        switch UIDevice.current.orientation {
+        case .portrait: value = .portrait
+        case .portraitUpsideDown: value = .portraitUpsideDown
+        case .landscapeLeft: value = .landscapeRight
+        case .landscapeRight: value = .landscapeLeft
+        default: return
+        }
+        orientation = value
+        pipeline.setOrientation(value)
     }
 
     func refreshFormats() {
@@ -114,35 +137,112 @@ struct ContentView: View {
     @StateObject private var model = CameraModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    @AppStorage("automaticCameraStart") private var automaticStart = true
+    @AppStorage("automaticBlackScreen") private var automaticBlackScreen = true
+    @State private var standby = false
+    @State private var brightness: CGFloat?
+    @State private var lastActivity = Date()
+
     var body: some View {
         GeometryReader { geometry in
             VStack(alignment: .leading, spacing: 16) {
                 header
-                HStack(alignment: .top, spacing: 18) {
-                    previewColumn
-                        .frame(width: max(200, (geometry.size.width - 50) * 0.48))
+                if geometry.size.width > geometry.size.height {
+                    HStack(alignment: .top, spacing: 18) {
+                        previewColumn.frame(width: (geometry.size.width - 50) * 0.48)
+                        ScrollView { settings }
+                    }
+                } else {
                     ScrollView {
-                        VStack(spacing: 14) {
-                            connectionCard
-                            videoCard
-                            zoomCard
-                            cameraCard
-                            diagnosticsCard
+                        VStack(spacing: 16) {
+                            previewColumn.frame(height: geometry.size.width * 1.12)
+                            settings
                         }
-                        .padding(.bottom, 8)
                     }
                 }
-            }
-            .padding(16)
+            }.padding(16)
         }
         .background(BridgeBrand.background.ignoresSafeArea())
         .foregroundColor(BridgeBrand.foreground)
         .accentColor(BridgeBrand.primary)
         .preferredColorScheme(.dark)
         .safeAreaInset(edge: .bottom) { actionBar }
-        .task { if !model.running { model.start() } }
+        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in lastActivity = Date() })
+        .overlay {
+            if standby {
+                Color.black.ignoresSafeArea().contentShape(Rectangle())
+                    .onTapGesture { wake() }
+                    .accessibilityLabel("Bildschirm aufwecken")
+                    .accessibilityAddTraits(.isButton)
+            }
+        }
+        .task {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            model.updateOrientation()
+            if automaticStart && !model.running { model.start() }
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { break }
+                if automaticBlackScreen && model.running && !model.configuring && scenePhase == .active && Date().timeIntervalSince(lastActivity) >= 30 { sleepScreen() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in model.updateOrientation() }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
+            if automaticStart && scenePhase == .active && !model.running && UIDevice.current.batteryState != .unplugged { model.start() }
+        }
+        .onChange(of: automaticStart) { enabled in
+            if enabled && scenePhase == .active && !model.running { model.start() }
+        }
+        .onChange(of: automaticBlackScreen) { _ in wake() }
+        .onChange(of: model.running) { running in
+            UIApplication.shared.isIdleTimerDisabled = running && scenePhase == .active
+            wake()
+        }
         .onChange(of: scenePhase) { phase in
-            if phase == .background { model.stop() }
+            if phase == .background { wake(); model.stop(); UIApplication.shared.isIdleTimerDisabled = false }
+            if phase == .active {
+                wake()
+                if automaticStart && !model.running { model.start() }
+                UIApplication.shared.isIdleTimerDisabled = model.running
+            }
+        }
+        .onDisappear { wake(); UIApplication.shared.isIdleTimerDisabled = false; UIDevice.current.endGeneratingDeviceOrientationNotifications() }
+    }
+
+    private var settings: some View {
+        VStack(spacing: 14) {
+            connectionCard
+            videoCard
+            zoomCard
+            cameraCard
+            startupCard
+            diagnosticsCard
+        }.padding(.bottom, 8)
+    }
+
+    private func sleepScreen() {
+        guard !standby, model.running else { return }
+        brightness = UIScreen.main.brightness
+        UIScreen.main.brightness = 0
+        standby = true
+    }
+    private func wake() {
+        if let saved = brightness { UIScreen.main.brightness = saved }
+        brightness = nil
+        standby = false
+        lastActivity = Date()
+    }
+
+    private var startupCard: some View {
+        BridgeCard("Start & Bildschirm", symbol: "power") {
+            Picker("Kamerastart", selection: $automaticStart) {
+                Text("Automatisch").tag(true)
+                Text("Manuell").tag(false)
+            }.pickerStyle(.segmented)
+            hint("Automatisch: beim Öffnen und beim Anschließen. App geöffnet lassen.")
+            Toggle("Nach 30 Sekunden abdunkeln", isOn: $automaticBlackScreen).tint(BridgeBrand.primary)
+            Button("Bildschirm abdunkeln") { sleepScreen() }
+                .buttonStyle(BridgeButtonStyle(primary: false)).disabled(!model.running)
+            hint("Antippen weckt den Bildschirm. Die Seitentaste unterbricht die Kamera.")
         }
     }
 
@@ -165,7 +265,7 @@ struct ContentView: View {
 
     private var previewColumn: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CameraPreview(session: model.pipeline.session)
+            CameraPreview(session: standby ? nil : model.pipeline.session, orientation: model.orientation.videoOrientation)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -219,6 +319,13 @@ struct ContentView: View {
                     Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s")
                         .monospacedDigit().foregroundColor(BridgeBrand.foreground)
                 }
+                Picker("Bitrate", selection: $model.bitrateMode) {
+                    Text("Niedrig").tag("low")
+                    Text("Mittel").tag("medium")
+                    Text("Hoch").tag("high")
+                    Text("Custom").tag("custom")
+                }.pickerStyle(.segmented).onChange(of: model.bitrateMode) { model.selectBitrate($0) }
+                if model.bitrateMode == "custom" {
                 Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
                     .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
                 Stepper("Bitrate fein einstellen", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
@@ -227,7 +334,7 @@ struct ContentView: View {
             if model.running {
                 Button("Videoeinstellungen Ã¼bernehmen") { model.start(replaceCurrent: true) }
                     .buttonStyle(BridgeButtonStyle(primary: true)).disabled(model.configuring)
-                hint("Startet Kamera und USB-Verbindung kurz neu. Die Werte werden gespeichert.")
+                hint("Verbindung startet kurz neu.")
             }
         }
     }
@@ -349,25 +456,30 @@ private struct BridgeButtonStyle: ButtonStyle {
 }
 
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let session: AVCaptureSession?
+    let orientation: AVCaptureVideoOrientation
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
+        view.orientation = orientation
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspect
         return view
     }
     func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.orientation = orientation
+        uiView.setNeedsLayout()
         if uiView.previewLayer.session !== session { uiView.previewLayer.session = session }
     }
 }
 
 final class PreviewView: UIView {
+    var orientation: AVCaptureVideoOrientation = .portrait
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
     override func layoutSubviews() {
         super.layoutSubviews()
         if let connection = previewLayer.connection, connection.isVideoOrientationSupported {
-            connection.videoOrientation = .landscapeRight
+            connection.videoOrientation = orientation
         }
     }
 }

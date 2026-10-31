@@ -15,6 +15,17 @@ enum CaptureResolution: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+extension BridgeOrientation {
+    var videoOrientation: AVCaptureVideoOrientation {
+        switch self {
+        case .portrait: return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        case .landscapeLeft: return .landscapeLeft
+        case .landscapeRight: return .landscapeRight
+        }
+    }
+}
+
 /// Every mutable capture/encoder field is confined to `queue`.
 /// Published callbacks only change before capture starts; the UI hops to MainActor.
 final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -43,6 +54,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var requestedFrontCamera = false
     private var currentWidth = 1280
     private var currentHeight = 720
+    private var requestedResolution = CaptureResolution.hd720
+    private var captureOrientation = BridgeOrientation.portrait
+    private var videoOutput: AVCaptureVideoDataOutput?
+    private var orientationChange: DispatchWorkItem?
     private var configurationRequestID: String?
 
     func setBattery(percent: Int, charging: Bool) {
@@ -58,6 +73,27 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         transport.onBridgeControl = { [weak self] request in
             self?.queue.async { [weak self] in self?.handleBridgeRequest(request) }
         }
+    }
+
+    func setOrientation(_ orientation: BridgeOrientation) {
+        queue.async { [self] in
+            orientationChange?.cancel()
+            let change = DispatchWorkItem { [weak self] in self?.applyOrientation(orientation) }
+            orientationChange = change
+            queue.asyncAfter(deadline: .now() + (active ? 0.25 : 0), execute: change)
+        }
+    }
+
+    private func applyOrientation(_ orientation: BridgeOrientation) {
+        guard orientation != captureOrientation else { return }
+        captureOrientation = orientation
+        guard active, let connection = videoOutput?.connection(with: .video), connection.isVideoOrientationSupported else { return }
+        generation &+= 1 // Discard old encoder callbacks after a rotation.
+        connection.videoOrientation = orientation.videoOrientation
+        encodingFailed = false
+        tearDownEncoder()
+        transport.disconnect()
+        onStatus?(orientation.isPortrait ? "Wechsle ins Hochformat Ö" : "Wechsle ins Querformat Ö", true)
     }
 
     static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
@@ -98,6 +134,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         return
                     }
                     do {
+                        self.requestedResolution = resolution
                         try self.configure(resolution: resolution, fps: fps, frontCamera: frontCamera)
                         self.applyZoom(zoom)
                         self.frames = 0
@@ -133,6 +170,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func stop() {
         queue.async { [self] in
             generation &+= 1 // Cancels a pending permission completion.
+            orientationChange?.cancel()
             active = false
             turnOffTorch()
             if session.isRunning { session.stopRunning() }
@@ -207,6 +245,8 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         var state: [String: Any] = ["protocol": "camera-bridge/1", "formats": formats,
             "width": currentWidth, "height": currentHeight, "fps": requestedFPS, "bitrate": requestedBitrate,
+            "captureWidth": Int(requestedResolution.width), "captureHeight": Int(requestedResolution.height),
+            "orientation": captureOrientation.rawValue,
             "zoom": Double(captureDevice?.videoZoomFactor ?? 1),
             "minimumZoom": Double(captureDevice?.minAvailableVideoZoomFactor ?? 1),
             "maximumZoom": Double(captureDevice?.maxAvailableVideoZoomFactor ?? 1)]
@@ -254,9 +294,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         output.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(output) else { throw BridgeError.message("Die Videoaufnahme konnte nicht eingerichtet werden.") }
         session.addOutput(output)
-        // Fix landscape geometry so the encoder dimensions match the sensor buffers.
+        videoOutput = output
+        // Rotate buffers before encoding so preview, files and desktop agree.
         if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
-            connection.videoOrientation = .landscapeRight
+            connection.videoOrientation = captureOrientation.videoOrientation
         }
         tearDownEncoder()
     }
@@ -288,6 +329,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if capturedFrames == 1 || capturedFrames % 30 == 0 { onCaptureProgress?(capturedFrames) }
         // Preview is independent of encoding; configure from actual camera buffers.
         guard !encodingFailed else { return }
+        let expected = captureOrientation.dimensions(width: Int(requestedResolution.width), height: Int(requestedResolution.height))
+        guard CVPixelBufferGetWidth(pixelBuffer) == expected.width,
+              CVPixelBufferGetHeight(pixelBuffer) == expected.height else { return }
         if encoder == nil {
             let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
             let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
@@ -298,7 +342,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
                     fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge",
                     bridgeState: bridgeManifest(requestID: configurationRequestID))
-                configurationRequestID = nil
+                // Keep the configuration acknowledgment valid through rotation reconnects.
                 onStatus?("Kamera l√§uft: \(width) √ó \(height), \(requestedFPS) FPS, \(Double(requestedBitrate) / 1_000_000) Mbit/s Zielbitrate.", true)
             } catch {
                 encodingFailed = true

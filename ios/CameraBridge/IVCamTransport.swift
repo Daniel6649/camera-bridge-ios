@@ -1,6 +1,14 @@
 import Foundation
 import Network
 
+enum BridgeOrientation: String, CaseIterable, Sendable {
+    case portrait, portraitUpsideDown, landscapeLeft, landscapeRight
+    var isPortrait: Bool { self == .portrait || self == .portraitUpsideDown }
+    func dimensions(width: Int, height: Int) -> (width: Int, height: Int) {
+        isPortrait ? (height, width) : (width, height)
+    }
+}
+
 struct BridgeRequest: Decodable, Sendable {
     enum InvalidRequest: Error { case invalid }
     let id: String
