@@ -4,6 +4,8 @@ Eigenständig geschriebener Swift-Client auf Basis der statischen Analyse von iV
 
 ## Stand
 
+Version 0.6.2 fordert den Kamerazugriff vor der Geräte-/Formatprüfung an. Bei noch nicht erteilter Berechtigung erscheint der iOS-Systemdialog; Kamera und Encoder starten erst nach Zustimmung. Ein sichtbarer Berechtigungsbereich erklärt den Zugriff. Nach einer früheren Ablehnung führt **Einstellungen öffnen** zu den App-Einstellungen; bei Bildschirmzeit-/Verwaltungssperren erscheint ein eigener Hinweis. Die Rückkehr aus den Einstellungen prüft den Status erneut und startet bei erlaubtem Zugriff automatisch. Bereits erlaubter Kamerazugriff wird weiterverwendet, ohne erneut zu fragen. Mikrofon- oder Fotomediathekzugriff werden für diese Videofunktion nicht angefordert.
+
 Version 0.6.1 ergänzt Bitraten-Vorgaben: **Niedrig 3**, **Mittel 6**, **Hoch 12 Mbit/s** sowie **Custom**. Nur Custom zeigt den freien Regler und die Feineinstellung. Der letzte eigene Wert bleibt beim Wechsel zu Vorgaben erhalten; die angewendete Auswahl wird gespeichert. Neue Installationen starten mit Mittel (6 Mbit/s), vorhandene Bitraten bleiben erhalten. Die passenden PC-Schaltflächen sind in Receiver 0.3.3 verfügbar und funktionieren auch mit der vorherigen iPhone-Version.
 
 Version 0.6.0 startet die Kamera automatisch beim Öffnen und bei der Rückkehr in den Vordergrund. Ein geöffneter Receiver verbindet sich per USB und startet die Übertragung ohne weiteren Startknopf. USB-Listener und Encoder versuchen nach Fehlern erneut zu starten; während der Kameraaufnahme bleibt das iPhone wach. Die App muss auf dem iPhone geöffnet bleiben: Sie kann sich durch Einstecken des Kabels nicht selbst aus einem beendeten Zustand öffnen.

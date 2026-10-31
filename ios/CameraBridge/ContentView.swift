@@ -95,6 +95,7 @@ final class CameraModel: ObservableObject {
     }
 
     func refreshFormats() {
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
         availableResolutions = CaptureResolution.allCases.filter {
             !CameraPipeline.supportedFrameRates(resolution: $0, frontCamera: frontCamera).isEmpty
         }
