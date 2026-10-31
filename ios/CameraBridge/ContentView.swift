@@ -210,6 +210,7 @@ struct ContentView: View {
                 }
             }
             .disabled(model.configuring)
+            .tint(BridgeBrand.link)
             .onChange(of: model.resolution) { _ in model.refreshFormats() }
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -274,7 +275,7 @@ struct ContentView: View {
                     Text("Kamera: \(model.capturedFrames) Bilder · Encoder: \(model.encodedFrames) Bilder · \(model.encodedBytes) Bytes").monospacedDigit()
                     Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
                 }.font(.caption).foregroundColor(BridgeBrand.secondary).padding(.top, 8)
-            }
+            }.tint(BridgeBrand.link)
         }
     }
 
@@ -303,6 +304,7 @@ private enum BridgeBrand {
     static let surface = Color(red: 21/255, green: 29/255, blue: 43/255)
     static let subtle = Color(red: 21/255, green: 59/255, blue: 117/255)
     static let primary = Color(red: 45/255, green: 107/255, blue: 255/255)
+    static let link = Color(red: 138/255, green: 176/255, blue: 255/255)
     static let foreground = Color(red: 237/255, green: 243/255, blue: 255/255)
     static let secondary = Color(red: 166/255, green: 180/255, blue: 203/255)
     static let line = Color(red: 41/255, green: 55/255, blue: 77/255)

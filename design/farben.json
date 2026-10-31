@@ -1,0 +1,8 @@
+{
+  "background": { "name": "Tiefschwarz", "hex": "#090D14", "usage": "Hintergrund" },
+  "surface": { "name": "Anthrazit", "hex": "#151D2B", "usage": "Karten und Flächen" },
+  "accentSubtle": { "name": "Dunkelblau", "hex": "#153B75", "usage": "Dezente Akzente" },
+  "primary": { "name": "Königsblau", "hex": "#2D6BFF", "usage": "Logo, Hauptaktionen, aktive Elemente" },
+  "foreground": { "name": "Eisweiß", "hex": "#EDF3FF", "usage": "Primärer UI-Text und Symbole" },
+  "logoWhite": { "name": "Logo-Weiß", "hex": "#FFFFFF", "usage": "Weiße Logo-Variante" }
+}
