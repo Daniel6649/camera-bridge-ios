@@ -4,6 +4,14 @@ import Foundation
 @main
 struct WireFormatChecks {
     static func main() {
+        for orientation in BridgeOrientation.allCases {
+            let size = orientation.dimensions(width: 1920, height: 1080)
+            precondition(size.width == (orientation.isPortrait ? 1080 : 1920))
+            precondition(size.height == (orientation.isPortrait ? 1920 : 1080))
+        }
+        let portrait = IVCamTransport.handshake(width: 1080, height: 1920, fps: 30, bitrate: 25_000_000, name: "Camera Bridge")
+        precondition(portrait.subdata(in: 8..<16) == hex("3804000080070000"))
+
         let greeting = IVCamTransport.handshake(width: 1280, height: 720, fps: 30,
             bitrate: 3_000_000, name: String(repeating: "A", count: 140))
         precondition(greeting.count == 444)
