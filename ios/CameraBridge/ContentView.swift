@@ -11,6 +11,8 @@ final class CameraModel: ObservableObject {
     @Published var availableResolutions: [CaptureResolution] = [.hd720]
     @Published var availableFPS = [30]
     @Published var configuring = false
+    @Published var cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
+    @Published var requestingCameraPermission = false
     @Published var zoom = 1.0
     @Published var minimumZoom = 1.0
     @Published var maximumZoom = 1.0
@@ -39,7 +41,8 @@ final class CameraModel: ObservableObject {
         lastCustomBitrate = custom.isFinite ? min(50, max(0.5, custom)) : 6
         let savedZoom = saved.object(forKey: "captureZoom") == nil ? 1.0 : saved.double(forKey: "captureZoom")
         zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
-        refreshFormats()
+        // Permission must be requested before inspecting camera formats. Some
+        // devices expose no usable formats until camera access is granted.
         UIDevice.current.isBatteryMonitoringEnabled = true
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         updateOrientation(UIDevice.current.orientation)
@@ -48,6 +51,7 @@ final class CameraModel: ObservableObject {
                 self?.status = message
                 self?.running = active
                 self?.configuring = false
+                self?.cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
                 UIApplication.shared.isIdleTimerDisabled = active
                 if !active { self?.torch = false }
             }
@@ -102,6 +106,22 @@ final class CameraModel: ObservableObject {
     }
 
     func start(replaceCurrent: Bool = false) {
+        cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
+        switch cameraPermission {
+        case .notDetermined:
+            requestCameraPermission()
+            return
+        case .denied:
+            status = "Kamerazugriff abgelehnt. Bitte in den iPhone-Einstellungen erlauben."
+            return
+        case .restricted:
+            status = "Kamerazugriff ist durch Bildschirmzeit oder Geräteverwaltung eingeschränkt."
+            return
+        case .authorized: break
+        @unknown default:
+            status = "Der Kamerazugriff konnte nicht geprüft werden."
+            return
+        }
         refreshFormats()
         guard !availableFPS.isEmpty else { status = "Die gewählte Kamera bietet kein unterstütztes Videoformat an."; return }
         let saved = UserDefaults.standard
@@ -126,6 +146,34 @@ final class CameraModel: ObservableObject {
         bitrateMbps = preset.mbps ?? lastCustomBitrate
     }
 
+    func requestCameraPermission() {
+        guard !requestingCameraPermission else { return }
+        cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
+        guard cameraPermission == .notDetermined else {
+            if cameraPermission == .authorized { resumeAutomatically() }
+            return
+        }
+        requestingCameraPermission = true
+        status = "Bitte Kamerazugriff im iPhone-Dialog erlauben."
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.requestingCameraPermission = false
+                self.cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
+                if self.cameraPermission == .authorized {
+                    self.resumeAutomatically()
+                } else {
+                    self.status = "Ohne Kamerazugriff kann kein Livebild übertragen werden."
+                }
+            }
+        }
+    }
+
+    func openCameraSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
     private func saveBitrateChoice() {
         UserDefaults.standard.set(bitratePreset.rawValue, forKey: "captureBitratePreset")
         UserDefaults.standard.set(lastCustomBitrate, forKey: "customBitrateMbps")
@@ -141,6 +189,8 @@ final class CameraModel: ObservableObject {
 
     func resumeAutomatically() {
         guard UIApplication.shared.applicationState == .active else { return }
+        cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
+        guard !requestingCameraPermission else { return }
         updateOrientation(UIDevice.current.orientation)
         if !running && !configuring { start() }
     }
@@ -172,6 +222,27 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
         VStack(spacing: 16) {
+            if model.cameraPermission != .authorized {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Kamerazugriff", systemImage: "camera")
+                        .font(.headline)
+                    if model.cameraPermission == .notDetermined {
+                        Text("Erlaube den Zugriff auf die Kamera, damit dein Livebild an den PC übertragen werden kann.")
+                        Button(model.requestingCameraPermission ? "Warte auf deine Auswahl …" : "Kamerazugriff erlauben") { model.requestCameraPermission() }
+                            .disabled(model.requestingCameraPermission)
+                    } else if model.cameraPermission == .restricted {
+                        Text("Die Kamera ist durch Bildschirmzeit oder eine Geräteverwaltung eingeschränkt. Diese Einschränkung muss dort aufgehoben werden.")
+                        Button("Einstellungen öffnen") { model.openCameraSettings() }
+                    } else {
+                        Text("Der Kamerazugriff wurde abgelehnt. Aktiviere „Kamera“ in den Einstellungen dieser App. Nach der Rückkehr startet die Übertragung automatisch.")
+                        Button("Einstellungen öffnen") { model.openCameraSettings() }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding().background(.thinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .buttonStyle(.borderedProminent)
+            }
             CameraPreview(session: model.pipeline.session, orientation: model.orientation)
                 .frame(height: 220)
                 .background(Color.black)
@@ -265,7 +336,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button("Kamera starten") { model.start() }.disabled(model.running || model.availableFPS.isEmpty)
+                Button("Kamera starten") { model.start() }.disabled(model.running || model.requestingCameraPermission || (model.cameraPermission == .authorized && model.availableFPS.isEmpty))
                 Button("Stoppen") { model.stop() }.disabled(!model.running)
             }
             .buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity)
