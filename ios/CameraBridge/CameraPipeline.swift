@@ -357,7 +357,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
                     fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge",
                     bridgeState: bridgeManifest(requestID: configurationRequestID))
-                configurationRequestID = nil
+                // Retain the latest configuration ID across orientation/USB
+                // reconnects until another configuration replaces it. Rotation
+                // must not lose a PC acknowledgment still in flight.
                 onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) FPS, \(Double(requestedBitrate) / 1_000_000) Mbit/s Zielbitrate.", true)
             } catch {
                 encodingFailed = true
