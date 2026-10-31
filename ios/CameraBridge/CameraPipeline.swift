@@ -15,17 +15,6 @@ enum CaptureResolution: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-extension BridgeOrientation {
-    var videoOrientation: AVCaptureVideoOrientation {
-        switch self {
-        case .portrait: return .portrait
-        case .portraitUpsideDown: return .portraitUpsideDown
-        case .landscapeLeft: return .landscapeLeft
-        case .landscapeRight: return .landscapeRight
-        }
-    }
-}
-
 /// Every mutable capture/encoder field is confined to `queue`.
 /// Published callbacks only change before capture starts; the UI hops to MainActor.
 final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -55,15 +44,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var currentWidth = 1280
     private var currentHeight = 720
     private var configurationRequestID: String?
-    private var requestedResolution = CaptureResolution.hd720
-    private var captureOrientation = BridgeOrientation.portrait
-    private var videoOutput: AVCaptureVideoDataOutput?
-    private var orientationChange: DispatchWorkItem?
-    private var forceKeyframe = true
-    private var runtimeObserver: NSObjectProtocol?
-    private var interruptionObserver: NSObjectProtocol?
-    private var interruptionEndedObserver: NSObjectProtocol?
-    private var interruptionReason: Int?
 
     func setBattery(percent: Int, charging: Bool) {
         queue.async { [self] in batteryStatus = UInt32(max(0, min(100, percent))) + (charging ? 100 : 0) }
@@ -78,68 +58,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         transport.onBridgeControl = { [weak self] request in
             self?.queue.async { [weak self] in self?.handleBridgeRequest(request) }
         }
-        transport.onReady = { [weak self] in
-            self?.queue.async { [weak self] in self?.forceKeyframe = true }
-        }
-        runtimeObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] _ in
-            self?.queue.async { [weak self] in
-                guard let self, self.active else { return }
-                if !self.session.isRunning && !self.session.isInterrupted { self.session.startRunning() }
-            }
-        }
-        interruptionObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) { [weak self] notification in
-            let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue ?? 0
-            self?.queue.async { [weak self] in
-                guard let self, self.active else { return }
-                self.interruptionReason = reason
-                let message: String
-                switch reason {
-                case 1: message = "iOS pausiert die Kamera im Hintergrund. Camera Bridge wieder öffnen."
-                case 3: message = "Eine andere App verwendet die Kamera. Diese schließen und Camera Bridge wieder öffnen."
-                case 4: message = "iOS blockiert die Kamera wegen einer Vordergrund-Unterbrechung (Code 4). Andere Video-Fenster schließen. Bleibt der Fehler trotz Vollbild bestehen, das iPhone neu starten."
-                case 5: message = "iOS pausiert die Kamera wegen hoher Systembelastung oder Temperatur. Bitte kurz warten."
-                default: message = "iOS hat die Kamera unterbrochen (Code \(reason)). Warte auf Freigabe …"
-                }
-                self.onStatus?(message, true)
-            }
-        }
-        interruptionEndedObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: nil) { [weak self] _ in
-            self?.queue.async { [weak self] in
-                guard let self, self.active else { return }
-                self.interruptionReason = nil
-                if !self.session.isRunning { self.session.startRunning() }
-                self.forceKeyframe = true
-                self.onStatus?("iOS hat die Kamera wieder freigegeben. Warte auf Livebild …", true)
-            }
-        }
-    }
-
-    deinit {
-        for observer in [runtimeObserver, interruptionObserver, interruptionEndedObserver].compactMap({ $0 }) {
-            NotificationCenter.default.removeObserver(observer)
-        }
-    }
-
-    func setOrientation(_ orientation: BridgeOrientation) {
-        queue.async { [self] in
-            orientationChange?.cancel()
-            let change = DispatchWorkItem { [weak self] in self?.applyOrientation(orientation) }
-            orientationChange = change
-            queue.asyncAfter(deadline: .now() + (active ? 0.25 : 0), execute: change)
-        }
-    }
-
-    private func applyOrientation(_ orientation: BridgeOrientation) {
-        guard orientation != captureOrientation else { return }
-        captureOrientation = orientation
-        guard active, let connection = videoOutput?.connection(with: .video), connection.isVideoOrientationSupported else { return }
-        generation &+= 1 // Discard old encoder callbacks after a rotation.
-        connection.videoOrientation = orientation.videoOrientation
-        encodingFailed = false
-        tearDownEncoder()
-        transport.disconnect()
-        forceKeyframe = true
-        onStatus?(orientation.isPortrait ? "Wechsle ins Hochformat …" : "Wechsle ins Querformat …", true)
     }
 
     static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
@@ -187,7 +105,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.encodingFailed = false
                         self.capturedFrames = 0
                         self.requestedFPS = fps
-                        self.requestedResolution = resolution
                         self.requestedBitrate = bitrate
                         self.requestedHost = host
                         self.requestedConnection = mode
@@ -196,13 +113,12 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.onProgress?(0, 0)
                         self.onCaptureProgress?(0)
                         self.active = true
-                        self.interruptionReason = nil
                         self.session.startRunning()
                         self.onStatus?("Kamera gestartet – warte auf das erste Bild.", true)
                         self.queue.asyncAfter(deadline: .now() + 5) {
                             guard self.generation == requestGeneration, self.active,
-                                  self.capturedFrames == 0, self.interruptionReason == nil else { return }
-                            self.onStatus?("Kamera liefert noch keine Bilder. Sitzung läuft: \(self.session.isRunning), von iOS unterbrochen: \(self.session.isInterrupted).", true)
+                                  self.capturedFrames == 0 else { return }
+                            self.onStatus?("Die Kamera liefert keine Bilder. Bitte Kamerazugriff prüfen und erneut starten.", true)
                         }
                     } catch {
                         self.tearDownEncoder()
@@ -217,7 +133,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func stop() {
         queue.async { [self] in
             generation &+= 1 // Cancels a pending permission completion.
-            orientationChange?.cancel()
             active = false
             turnOffTorch()
             if session.isRunning { session.stopRunning() }
@@ -292,8 +207,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         var state: [String: Any] = ["protocol": "camera-bridge/1", "formats": formats,
             "width": currentWidth, "height": currentHeight, "fps": requestedFPS, "bitrate": requestedBitrate,
-            "captureWidth": Int(requestedResolution.width), "captureHeight": Int(requestedResolution.height),
-            "orientation": captureOrientation.rawValue,
             "zoom": Double(captureDevice?.videoZoomFactor ?? 1),
             "minimumZoom": Double(captureDevice?.minAvailableVideoZoomFactor ?? 1),
             "maximumZoom": Double(captureDevice?.maxAvailableVideoZoomFactor ?? 1)]
@@ -323,9 +236,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-        if #available(iOS 16.0, *), session.isMultitaskingCameraAccessSupported {
-            session.isMultitaskingCameraAccessEnabled = true
-        }
         session.inputs.forEach { session.removeInput($0) }
         session.outputs.forEach { session.removeOutput($0) }
         session.sessionPreset = .inputPriority
@@ -344,10 +254,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         output.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(output) else { throw BridgeError.message("Die Videoaufnahme konnte nicht eingerichtet werden.") }
         session.addOutput(output)
-        videoOutput = output
-        // Physically rotate buffers, so encoded files and PC preview agree.
+        // Fix landscape geometry so the encoder dimensions match the sensor buffers.
         if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
-            connection.videoOrientation = captureOrientation.videoOrientation
+            connection.videoOrientation = .landscapeRight
         }
         tearDownEncoder()
     }
@@ -379,39 +288,30 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if capturedFrames == 1 || capturedFrames % 30 == 0 { onCaptureProgress?(capturedFrames) }
         // Preview is independent of encoding; configure from actual camera buffers.
         guard !encodingFailed else { return }
-        let expected = captureOrientation.dimensions(width: Int(requestedResolution.width), height: Int(requestedResolution.height))
-        guard CVPixelBufferGetWidth(pixelBuffer) == expected.width,
-              CVPixelBufferGetHeight(pixelBuffer) == expected.height else { return }
         if encoder == nil {
             let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
             let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
             do {
                 try createEncoder(width: width, height: height, fps: requestedFPS, bitrate: requestedBitrate)
-                forceKeyframe = true
                 currentWidth = Int(width)
                 currentHeight = Int(height)
                 transport.connect(host: requestedHost, mode: requestedConnection, width: UInt32(width), height: UInt32(height),
                     fps: UInt32(requestedFPS), bitrate: UInt32(requestedBitrate), name: "Camera Bridge",
                     bridgeState: bridgeManifest(requestID: configurationRequestID))
-                // Retain the latest configuration ID across orientation/USB
-                // reconnects until another configuration replaces it. Rotation
-                // must not lose a PC acknowledgment still in flight.
+                configurationRequestID = nil
                 onStatus?("Kamera läuft: \(width) × \(height), \(requestedFPS) FPS, \(Double(requestedBitrate) / 1_000_000) Mbit/s Zielbitrate.", true)
             } catch {
                 encodingFailed = true
                 tearDownEncoder()
-                onStatus?("Videoübertragung wird automatisch erneut versucht: \(error.localizedDescription)", true)
-                scheduleEncoderRetry()
+                onStatus?("Kameravorschau läuft; Videoübertragung nicht verfügbar: \(error.localizedDescription)", true)
                 return
             }
         }
         guard let encoder else { return }
         let currentGeneration = generation
-        let properties: CFDictionary? = forceKeyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary : nil
-        forceKeyframe = false
         let result = VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixelBuffer,
             presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
-            duration: CMSampleBufferGetDuration(sampleBuffer), frameProperties: properties, infoFlagsOut: nil) { [weak self] status, _, encoded in
+            duration: CMSampleBufferGetDuration(sampleBuffer), frameProperties: nil, infoFlagsOut: nil) { [weak self] status, _, encoded in
                 guard let self else { return }
                 let size = encoded.map { CMSampleBufferGetTotalSampleSize($0) } ?? 0
                 let frame = encoded.flatMap(Self.extractFrame)
@@ -436,17 +336,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         encodingFailed = true
         tearDownEncoder()
         transport.disconnect()
-        onStatus?("Video-Encoder meldet Fehler \(status). Automatischer Wiederanlauf …", true)
-        scheduleEncoderRetry()
-    }
-
-    private func scheduleEncoderRetry() {
-        let retryGeneration = generation
-        queue.asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self, self.active, self.generation == retryGeneration else { return }
-            self.encodingFailed = false
-            self.forceKeyframe = true
-        }
+        onStatus?("Kameravorschau läuft; Video-Encoder meldet Fehler \(status). Bitte erneut starten.", true)
     }
 
     private func tearDownEncoder() {

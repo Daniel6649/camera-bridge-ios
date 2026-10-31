@@ -1,28 +1,6 @@
 import Foundation
 import Network
 
-enum BitratePreset: String, CaseIterable, Identifiable, Sendable {
-    case low, medium, high, custom
-    var id: String { rawValue }
-    var title: String {
-        switch self { case .low: return "Niedrig"; case .medium: return "Mittel"; case .high: return "Hoch"; case .custom: return "Custom" }
-    }
-    var mbps: Double? {
-        switch self { case .low: return 3; case .medium: return 6; case .high: return 12; case .custom: return nil }
-    }
-    static func matching(_ value: Double) -> BitratePreset {
-        allCases.first { preset in preset.mbps.map { abs($0 - value) < 0.000001 } ?? false } ?? .custom
-    }
-}
-
-enum BridgeOrientation: String, CaseIterable, Sendable {
-    case portrait, portraitUpsideDown, landscapeLeft, landscapeRight
-    var isPortrait: Bool { self == .portrait || self == .portraitUpsideDown }
-    func dimensions(width: Int, height: Int) -> (width: Int, height: Int) {
-        isPortrait ? (height, width) : (width, height)
-    }
-}
-
 struct BridgeRequest: Decodable, Sendable {
     enum InvalidRequest: Error { case invalid }
     let id: String
@@ -46,7 +24,6 @@ final class IVCamTransport: @unchecked Sendable {
     var onStatus: (@Sendable (String) -> Void)?
     var onControl: (@Sendable (UInt32, UInt32) -> Void)?
     var onBridgeControl: (@Sendable (BridgeRequest) -> Void)?
-    var onReady: (@Sendable () -> Void)?
     private var bridgeState: Data?
     private let queue = DispatchQueue(label: "camera.bridge.transport")
     private var connection: NWConnection?
@@ -193,7 +170,6 @@ final class IVCamTransport: @unchecked Sendable {
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
-            self.onReady?()
             if let state = self.bridgeState {
                 self.enqueue(Self.packet(type: 0x10, timestamp: 0x00010003, payload: state), socket: socket)
             }
@@ -324,18 +300,14 @@ final class IVCamTransport: @unchecked Sendable {
     private func fail(_ message: String) {
         let previousSettings = settings
         let previousBridgeState = bridgeState
-        let retryUSB = mode == .usb && previousSettings != nil
+        let retryUSB = mode == .usb && listener != nil && connection != nil
         close()
         generation &+= 1
         onStatus?("USB/Verbindung getrennt: \(message)")
         if retryUSB {
             settings = previousSettings
             bridgeState = previousBridgeState
-            let retryGeneration = generation
-            queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self, self.generation == retryGeneration, self.settings != nil else { return }
-                self.listenUSB(generation: retryGeneration)
-            }
+            listenUSB(generation: generation)
         }
     }
     private func close() {

@@ -4,15 +4,6 @@ import Foundation
 @main
 struct WireFormatChecks {
     static func main() {
-        precondition(BitratePreset.low.mbps == 3 && BitratePreset.medium.mbps == 6 && BitratePreset.high.mbps == 12)
-        precondition(BitratePreset.matching(8.5) == .custom && BitratePreset.matching(6) == .medium)
-        for orientation in BridgeOrientation.allCases {
-            let dimensions = orientation.dimensions(width: 1920, height: 1080)
-            precondition(dimensions.width == (orientation.isPortrait ? 1080 : 1920))
-            precondition(dimensions.height == (orientation.isPortrait ? 1920 : 1080))
-            let rotated = IVCamTransport.handshake(width: UInt32(dimensions.width), height: UInt32(dimensions.height), fps: 30, bitrate: 6_000_000, name: "Camera Bridge")
-            precondition(rotated.subdata(in: 8..<16) == (orientation.isPortrait ? hex("3804000080070000") : hex("8007000038040000")))
-        }
         let greeting = IVCamTransport.handshake(width: 1280, height: 720, fps: 30,
             bitrate: 3_000_000, name: String(repeating: "A", count: 140))
         precondition(greeting.count == 444)
