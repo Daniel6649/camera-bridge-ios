@@ -5,7 +5,9 @@ import SwiftUI
 final class CameraModel: ObservableObject {
     @Published var resolution = CaptureResolution.hd720
     @Published var fps = 30
-    @Published var bitrateMbps = 3.0
+    @Published var bitrateMbps = 6.0
+    @Published var bitratePreset = BitratePreset.medium
+    private var lastCustomBitrate = 6.0
     @Published var availableResolutions: [CaptureResolution] = [.hd720]
     @Published var availableFPS = [30]
     @Published var configuring = false
@@ -29,8 +31,12 @@ final class CameraModel: ObservableObject {
         let saved = UserDefaults.standard
         resolution = saved.string(forKey: "captureResolution").flatMap(CaptureResolution.init(rawValue:)) ?? .hd720
         fps = saved.object(forKey: "captureFPS") == nil ? 30 : saved.integer(forKey: "captureFPS")
-        let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 3.0 : saved.double(forKey: "captureBitrateMbps")
-        bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 3.0
+        let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 6.0 : saved.double(forKey: "captureBitrateMbps")
+        bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 6.0
+        bitratePreset = BitratePreset.matching(bitrateMbps)
+        if saved.string(forKey: "captureBitratePreset") == "custom" { bitratePreset = .custom }
+        let custom = saved.object(forKey: "customBitrateMbps") == nil ? bitrateMbps : saved.double(forKey: "customBitrateMbps")
+        lastCustomBitrate = custom.isFinite ? min(50, max(0.5, custom)) : 6
         let savedZoom = saved.object(forKey: "captureZoom") == nil ? 1.0 : saved.double(forKey: "captureZoom")
         zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
         refreshFormats()
@@ -69,7 +75,13 @@ final class CameraModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.resolution = resolution
                 self?.fps = fps
-                self?.bitrateMbps = Double(bitrate) / 1_000_000
+                if let self {
+                    let mbps = Double(bitrate) / 1_000_000
+                    if abs(self.bitrateMbps - mbps) > 0.000001 { self.bitratePreset = .matching(mbps) }
+                    self.bitrateMbps = mbps
+                    if self.bitratePreset == .custom { self.lastCustomBitrate = mbps }
+                    self.saveBitrateChoice()
+                }
                 let saved = UserDefaults.standard
                 saved.set(resolution.rawValue, forKey: "captureResolution")
                 saved.set(fps, forKey: "captureFPS")
@@ -96,6 +108,7 @@ final class CameraModel: ObservableObject {
         saved.set(resolution.rawValue, forKey: "captureResolution")
         saved.set(fps, forKey: "captureFPS")
         saved.set(bitrateMbps, forKey: "captureBitrateMbps")
+        saveBitrateChoice()
         configuring = true
         running = true // Locks configuration while permission/configuration is pending.
         UIApplication.shared.isIdleTimerDisabled = true
@@ -105,6 +118,17 @@ final class CameraModel: ObservableObject {
             charging: device.batteryState == .charging || device.batteryState == .full)
         torch = false
         pipeline.start(resolution: resolution, fps: fps, bitrate: Int((bitrateMbps * 1_000_000).rounded()), zoom: zoom, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera, replaceCurrent: replaceCurrent)
+    }
+
+    func selectBitratePreset(_ preset: BitratePreset) {
+        if bitratePreset == .custom { lastCustomBitrate = bitrateMbps }
+        bitratePreset = preset
+        bitrateMbps = preset.mbps ?? lastCustomBitrate
+    }
+
+    private func saveBitrateChoice() {
+        UserDefaults.standard.set(bitratePreset.rawValue, forKey: "captureBitratePreset")
+        UserDefaults.standard.set(lastCustomBitrate, forKey: "customBitrateMbps")
     }
 
     func stop() {
@@ -177,14 +201,19 @@ struct ContentView: View {
             }.disabled(model.configuring)
                 .onChange(of: model.resolution) { _ in model.refreshFormats() }
             VStack(alignment: .leading, spacing: 8) {
+                Picker("Bitrate", selection: Binding(get: { model.bitratePreset }, set: { model.selectBitratePreset($0) })) {
+                    ForEach(BitratePreset.allCases) { preset in Text(preset.title).tag(preset) }
+                }.pickerStyle(.segmented)
                 HStack {
                     Text("Zielbitrate")
                     Spacer()
                     Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s").monospacedDigit()
                 }
-                Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
-                    .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
-                Stepper("Bitrate fein einstellen", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                if model.bitratePreset == .custom {
+                    Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                        .accessibilityLabel("Custom-Bitrate in Mbit pro Sekunde")
+                    Stepper("Custom-Bitrate", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                }
                 Text("Durchschnittliche H.264-Zielbitrate. Die tatsächliche Datenrate schwankt mit dem Bildinhalt.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.disabled(model.configuring)

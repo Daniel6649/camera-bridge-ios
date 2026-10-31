@@ -1,6 +1,20 @@
 import Foundation
 import Network
 
+enum BitratePreset: String, CaseIterable, Identifiable, Sendable {
+    case low, medium, high, custom
+    var id: String { rawValue }
+    var title: String {
+        switch self { case .low: return "Niedrig"; case .medium: return "Mittel"; case .high: return "Hoch"; case .custom: return "Custom" }
+    }
+    var mbps: Double? {
+        switch self { case .low: return 3; case .medium: return 6; case .high: return 12; case .custom: return nil }
+    }
+    static func matching(_ value: Double) -> BitratePreset {
+        allCases.first { preset in preset.mbps.map { abs($0 - value) < 0.000001 } ?? false } ?? .custom
+    }
+}
+
 enum BridgeOrientation: String, CaseIterable, Sendable {
     case portrait, portraitUpsideDown, landscapeLeft, landscapeRight
     var isPortrait: Bool { self == .portrait || self == .portraitUpsideDown }

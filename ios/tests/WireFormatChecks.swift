@@ -4,6 +4,8 @@ import Foundation
 @main
 struct WireFormatChecks {
     static func main() {
+        precondition(BitratePreset.low.mbps == 3 && BitratePreset.medium.mbps == 6 && BitratePreset.high.mbps == 12)
+        precondition(BitratePreset.matching(8.5) == .custom && BitratePreset.matching(6) == .medium)
         for orientation in BridgeOrientation.allCases {
             let dimensions = orientation.dimensions(width: 1920, height: 1080)
             precondition(dimensions.width == (orientation.isPortrait ? 1080 : 1920))
