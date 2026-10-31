@@ -78,7 +78,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         transport.onReady = { [weak self] in
             self?.queue.async { [weak self] in self?.forceKeyframe = true }
         }
-        runtimeObserver = NotificationCenter.default.addObserver(forName: .AVCaptureSessionRuntimeError, object: session, queue: nil) { [weak self] _ in
+        runtimeObserver = NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] _ in
             self?.queue.async { [weak self] in
                 guard let self, self.active else { return }
                 if !self.session.isRunning { self.session.startRunning() }
