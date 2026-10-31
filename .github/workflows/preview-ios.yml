@@ -1,0 +1,44 @@
+name: Preview iOS design
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build simulator app
+        run: >-
+          xcodebuild -project ios/CameraBridge.xcodeproj -scheme CameraBridge
+          -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath ios/build/preview
+          CODE_SIGNING_ALLOWED=NO build > ios-preview-build.log 2>&1
+      - name: Capture landscape interface
+        run: |
+          xcrun simctl list devices available -j > devices.json
+          DEVICE=$(python3 -c 'import json; d=json.load(open("devices.json")); print(next(x["udid"] for group in d["devices"].values() for x in group if x["isAvailable"] and "iPhone" in x["name"]))')
+          xcrun simctl boot "$DEVICE"
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcrun simctl ui "$DEVICE" appearance dark
+          xcrun simctl install "$DEVICE" ios/build/preview/Build/Products/Debug-iphonesimulator/CameraBridge.app
+          xcrun simctl privacy "$DEVICE" grant camera net.local.camerabridge || true
+          xcrun simctl launch "$DEVICE" net.local.camerabridge
+          sleep 5
+          xcrun simctl io "$DEVICE" screenshot ios-design-preview.png
+      - name: Save preview and build log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: iOS-design-preview
+          path: |
+            ios-design-preview.png
+            ios-preview-build.log
+          retention-days: 7
