@@ -18,6 +18,7 @@ final class CameraModel: ObservableObject {
     @Published var running = false
     @Published var desktopHost = ""
     @Published var connectionMode = BridgeConnection.usb
+    @Published var orientation = BridgeOrientation.portrait
     @Published var networkStatus = "USB wird nach dem Kamerastart bereitgestellt."
     @Published var capturedFrames: UInt64 = 0
     @Published var encodedFrames: UInt64 = 0
@@ -34,11 +35,14 @@ final class CameraModel: ObservableObject {
         zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
         refreshFormats()
         UIDevice.current.isBatteryMonitoringEnabled = true
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        updateOrientation(UIDevice.current.orientation)
         pipeline.onStatus = { [weak self] message, active in
             Task { @MainActor [weak self] in
                 self?.status = message
                 self?.running = active
                 self?.configuring = false
+                UIApplication.shared.isIdleTimerDisabled = active
                 if !active { self?.torch = false }
             }
         }
@@ -94,6 +98,7 @@ final class CameraModel: ObservableObject {
         saved.set(bitrateMbps, forKey: "captureBitrateMbps")
         configuring = true
         running = true // Locks configuration while permission/configuration is pending.
+        UIApplication.shared.isIdleTimerDisabled = true
         status = "Kamerazugriff wird angefragt…"
         let device = UIDevice.current
         pipeline.setBattery(percent: Int(max(0, device.batteryLevel) * 100),
@@ -102,7 +107,33 @@ final class CameraModel: ObservableObject {
         pipeline.start(resolution: resolution, fps: fps, bitrate: Int((bitrateMbps * 1_000_000).rounded()), zoom: zoom, host: desktopHost.trimmingCharacters(in: .whitespacesAndNewlines), mode: connectionMode, frontCamera: frontCamera, replaceCurrent: replaceCurrent)
     }
 
-    func stop() { torch = false; pipeline.stop() }
+    func stop() {
+        running = false
+        configuring = false
+        torch = false
+        UIApplication.shared.isIdleTimerDisabled = false
+        pipeline.stop()
+    }
+
+    func resumeAutomatically() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        updateOrientation(UIDevice.current.orientation)
+        if !running && !configuring { start() }
+    }
+
+    func updateOrientation(_ device: UIDeviceOrientation) {
+        let next: BridgeOrientation
+        switch device {
+        case .portrait: next = .portrait
+        case .portraitUpsideDown: next = .portraitUpsideDown
+        // Device and camera landscape coordinates run in opposite directions.
+        case .landscapeLeft: next = .landscapeRight
+        case .landscapeRight: next = .landscapeLeft
+        default: return // Face up/down/unknown retain the last usable angle.
+        }
+        orientation = next
+        pipeline.setOrientation(next)
+    }
     func setTorch(_ enabled: Bool) { pipeline.setTorch(enabled) }
     func setZoom(_ factor: Double) {
         UserDefaults.standard.set(factor, forKey: "captureZoom")
@@ -117,7 +148,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
         VStack(spacing: 16) {
-            CameraPreview(session: model.pipeline.session)
+            CameraPreview(session: model.pipeline.session, orientation: model.orientation)
                 .frame(height: 220)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -127,7 +158,7 @@ struct ContentView: View {
                 ForEach(BridgeConnection.allCases) { mode in Text(mode.rawValue).tag(mode) }
             }.pickerStyle(.segmented).disabled(model.running)
             if model.connectionMode == .usb {
-                Text("iPhone per USB-Kabel verbinden, entsperren und diesem Computer vertrauen. iVCam am PC öffnen. Keine PC-Adresse nötig.")
+                Text("USB anschließen und den Receiver am PC öffnen: Die Übertragung startet automatisch. Diese App geöffnet lassen. Hoch- und Querformat folgen der Haltung des iPhones.")
                     .font(.callout)
             } else {
             TextField("PC-Adresse (leer = automatisch suchen)", text: $model.desktopHost)
@@ -211,35 +242,44 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity)
             .background(.regularMaterial)
         }
-        .task { if !model.running { model.start() } }
+        .task { model.resumeAutomatically() }
         .padding()
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background { model.stop() }
+            if phase == .active { model.resumeAutomatically() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            model.updateOrientation(UIDevice.current.orientation)
         }
     }
 }
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    let orientation: BridgeOrientation
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspect
+        view.orientation = orientation.videoOrientation
         return view
     }
     func updateUIView(_ uiView: PreviewView, context: Context) {
         if uiView.previewLayer.session !== session { uiView.previewLayer.session = session }
+        uiView.orientation = orientation.videoOrientation
+        uiView.setNeedsLayout()
     }
 }
 
 final class PreviewView: UIView {
+    var orientation = AVCaptureVideoOrientation.portrait
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
     override func layoutSubviews() {
         super.layoutSubviews()
         if let connection = previewLayer.connection, connection.isVideoOrientationSupported {
-            connection.videoOrientation = .landscapeRight
+            connection.videoOrientation = orientation
         }
     }
 }

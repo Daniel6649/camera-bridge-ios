@@ -1,6 +1,14 @@
 import Foundation
 import Network
 
+enum BridgeOrientation: String, CaseIterable, Sendable {
+    case portrait, portraitUpsideDown, landscapeLeft, landscapeRight
+    var isPortrait: Bool { self == .portrait || self == .portraitUpsideDown }
+    func dimensions(width: Int, height: Int) -> (width: Int, height: Int) {
+        isPortrait ? (height, width) : (width, height)
+    }
+}
+
 struct BridgeRequest: Decodable, Sendable {
     enum InvalidRequest: Error { case invalid }
     let id: String
@@ -24,6 +32,7 @@ final class IVCamTransport: @unchecked Sendable {
     var onStatus: (@Sendable (String) -> Void)?
     var onControl: (@Sendable (UInt32, UInt32) -> Void)?
     var onBridgeControl: (@Sendable (BridgeRequest) -> Void)?
+    var onReady: (@Sendable () -> Void)?
     private var bridgeState: Data?
     private let queue = DispatchQueue(label: "camera.bridge.transport")
     private var connection: NWConnection?
@@ -170,6 +179,7 @@ final class IVCamTransport: @unchecked Sendable {
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
+            self.onReady?()
             if let state = self.bridgeState {
                 self.enqueue(Self.packet(type: 0x10, timestamp: 0x00010003, payload: state), socket: socket)
             }
@@ -300,14 +310,18 @@ final class IVCamTransport: @unchecked Sendable {
     private func fail(_ message: String) {
         let previousSettings = settings
         let previousBridgeState = bridgeState
-        let retryUSB = mode == .usb && listener != nil && connection != nil
+        let retryUSB = mode == .usb && previousSettings != nil
         close()
         generation &+= 1
         onStatus?("USB/Verbindung getrennt: \(message)")
         if retryUSB {
             settings = previousSettings
             bridgeState = previousBridgeState
-            listenUSB(generation: generation)
+            let retryGeneration = generation
+            queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, self.generation == retryGeneration, self.settings != nil else { return }
+                self.listenUSB(generation: retryGeneration)
+            }
         }
     }
     private func close() {
