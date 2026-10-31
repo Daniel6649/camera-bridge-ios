@@ -115,108 +115,234 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ScrollView {
-        VStack(spacing: 16) {
+        GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                HStack(alignment: .top, spacing: 18) {
+                    previewColumn
+                        .frame(width: max(200, (geometry.size.width - 50) * 0.48))
+                    ScrollView {
+                        VStack(spacing: 14) {
+                            connectionCard
+                            videoCard
+                            zoomCard
+                            cameraCard
+                            diagnosticsCard
+                        }
+                        .padding(.bottom, 8)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .background(BridgeBrand.background.ignoresSafeArea())
+        .foregroundColor(BridgeBrand.foreground)
+        .accentColor(BridgeBrand.primary)
+        .preferredColorScheme(.dark)
+        .safeAreaInset(edge: .bottom) { actionBar }
+        .task { if !model.running { model.start() } }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { model.stop() }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image("BrandLogo").resizable().scaledToFit().frame(width: 40, height: 40)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Camera Bridge").font(.system(size: 20, weight: .semibold))
+                Text("IPHONE CAMERA").font(.system(size: 9, weight: .medium)).tracking(2)
+                    .foregroundColor(BridgeBrand.secondary)
+            }
+            Spacer()
+            Text("v0.5 · Design").font(.caption2)
+                .foregroundColor(BridgeBrand.secondary)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(BridgeBrand.line))
+        }
+    }
+
+    private var previewColumn: some View {
+        VStack(alignment: .leading, spacing: 12) {
             CameraPreview(session: model.pipeline.session)
-                .frame(height: 220)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-            Text("Camera Bridge").font(.title2.bold())
-            Text("iPhone-Kamera für deinen PC").foregroundStyle(.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(BridgeBrand.line))
+                .layoutPriority(1)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.status).font(.system(size: 13, weight: .medium))
+                Text(model.networkStatus).font(.system(size: 11))
+                    .foregroundColor(BridgeBrand.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var connectionCard: some View {
+        BridgeCard("Verbindung", symbol: "cable.connector") {
             Picker("Verbindung", selection: $model.connectionMode) {
                 ForEach(BridgeConnection.allCases) { mode in Text(mode.rawValue).tag(mode) }
             }.pickerStyle(.segmented).disabled(model.running)
             if model.connectionMode == .usb {
-                Text("iPhone per USB-Kabel verbinden, entsperren und diesem Computer vertrauen. iVCam am PC öffnen. Keine PC-Adresse nötig.")
-                    .font(.callout)
+                hint("iPhone per USB verbinden, entsperren und diesem Computer vertrauen. Den Receiver am PC öffnen.")
             } else {
-            TextField("PC-Adresse (leer = automatisch suchen)", text: $model.desktopHost)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder).disabled(model.running)
+                TextField("PC-Adresse (leer = automatisch suchen)", text: $model.desktopHost)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .padding(10).background(BridgeBrand.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 8)).disabled(model.running)
             }
+        }
+    }
+
+    private var videoCard: some View {
+        BridgeCard("Videoformat", symbol: "slider.horizontal.3") {
             HStack {
                 Picker("Auflösung", selection: $model.resolution) {
                     ForEach(model.availableResolutions) { resolution in
                         Text(resolution.rawValue).tag(resolution)
                     }
                 }
+                Spacer()
                 Picker("Bildrate", selection: $model.fps) {
                     ForEach(model.availableFPS, id: \.self) { fps in Text("\(fps) FPS").tag(fps) }
                 }
-            }.disabled(model.configuring)
-                .onChange(of: model.resolution) { _ in model.refreshFormats() }
+            }
+            .disabled(model.configuring)
+            .onChange(of: model.resolution) { _ in model.refreshFormats() }
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Zielbitrate")
                     Spacer()
-                    Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s").monospacedDigit()
+                    Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s")
+                        .monospacedDigit().foregroundColor(BridgeBrand.foreground)
                 }
                 Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
                     .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
                 Stepper("Bitrate fein einstellen", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
-                Text("Durchschnittliche H.264-Zielbitrate. Die tatsächliche Datenrate schwankt mit dem Bildinhalt.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                hint("H.264-Zielbitrate. Die tatsächliche Datenrate schwankt mit dem Bildinhalt.")
             }.disabled(model.configuring)
             if model.running {
                 Button("Videoeinstellungen übernehmen") { model.start(replaceCurrent: true) }
-                    .buttonStyle(.borderedProminent).disabled(model.configuring)
-                Text("Startet Kamera und USB-Verbindung kurz neu. Die gewählten Werte werden gespeichert.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .buttonStyle(BridgeButtonStyle(primary: true)).disabled(model.configuring)
+                hint("Startet Kamera und USB-Verbindung kurz neu. Die Werte werden gespeichert.")
             }
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Zoom")
-                    Spacer()
-                    Text("\(model.zoom, specifier: "%.1f")×").monospacedDigit()
-                    Button("1×") { model.zoom = min(model.maximumZoom, max(model.minimumZoom, 1)) }
-                }
-                // Logarithmic travel keeps small zoom changes precise on cameras
-                // with a large digital-zoom range.
-                Slider(value: Binding(
-                    get: { log2(max(model.minimumZoom, min(model.maximumZoom, model.zoom))) },
-                    set: { model.zoom = pow(2, $0) }
-                ), in: log2(max(0.01, model.minimumZoom))...log2(max(model.minimumZoom + 0.001, model.maximumZoom)))
-                    .accessibilityLabel("Kamerazoom")
-                Text("Wirkt sofort auf Vorschau und übertragenes Video.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .disabled(!model.running || model.configuring || model.maximumZoom <= model.minimumZoom)
-            .onChange(of: model.zoom) { model.setZoom($0) }
+        }
+    }
+
+    private var zoomCard: some View {
+        BridgeCard("Zoom", symbol: "plus.magnifyingglass") {
             HStack {
-                Picker("Kamera", selection: $model.frontCamera) {
-                    Text("Rückkamera").tag(false)
-                    Text("Frontkamera").tag(true)
-                }.disabled(model.running)
-                    .onChange(of: model.frontCamera) { _ in model.refreshFormats() }
-                Toggle("Licht", isOn: $model.torch)
-                    .disabled(!model.running || model.frontCamera)
-                    .onChange(of: model.torch) { model.setTorch($0) }
+                Text("\(model.zoom, specifier: "%.1f")×").font(.system(size: 20, weight: .medium)).monospacedDigit()
+                Spacer()
+                Button("1×") { model.zoom = min(model.maximumZoom, max(model.minimumZoom, 1)) }
+                    .buttonStyle(BridgeButtonStyle(primary: false))
             }
-            Text(model.status).font(.callout)
-            Text(model.networkStatus).font(.callout).foregroundStyle(.secondary)
-            Text("Experimentell – USB ist implementiert; die Bildübertragung muss am Gerät geprüft werden. Ton ist noch nicht verfügbar.")
-                .font(.footnote).foregroundStyle(.orange)
+            Slider(value: Binding(
+                get: { log2(max(model.minimumZoom, min(model.maximumZoom, model.zoom))) },
+                set: { model.zoom = pow(2, $0) }
+            ), in: log2(max(0.01, model.minimumZoom))...log2(max(model.minimumZoom + 0.001, model.maximumZoom)))
+                .accessibilityLabel("Kamerazoom")
+            hint("Wirkt sofort auf Vorschau und übertragenes Video.")
+        }
+        .disabled(!model.running || model.configuring || model.maximumZoom <= model.minimumZoom)
+        .onChange(of: model.zoom) { model.setZoom($0) }
+    }
+
+    private var cameraCard: some View {
+        BridgeCard("Kamera & Licht", symbol: "camera") {
+            Picker("Kamera", selection: $model.frontCamera) {
+                Text("Rückkamera").tag(false)
+                Text("Frontkamera").tag(true)
+            }.pickerStyle(.segmented).disabled(model.running)
+                .onChange(of: model.frontCamera) { _ in model.refreshFormats() }
+            Toggle("Licht", isOn: $model.torch)
+                .tint(BridgeBrand.primary)
+                .disabled(!model.running || model.frontCamera)
+                .onChange(of: model.torch) { model.setTorch($0) }
+        }
+    }
+
+    private var diagnosticsCard: some View {
+        BridgeCard("Informationen", symbol: "info.circle") {
+            hint("Experimentell – USB ist implementiert; die Bildübertragung muss am Gerät geprüft werden. Ton ist noch nicht verfügbar.")
             DisclosureGroup("Diagnose") {
-                Text(model.status).font(.caption)
-                Text(model.networkStatus).font(.caption)
-                Text("Kamera: \(model.capturedFrames) Bilder · Encoder: \(model.encodedFrames) Bilder · \(model.encodedBytes) Bytes").font(.caption.monospacedDigit())
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")").font(.caption)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(model.status)
+                    Text(model.networkStatus)
+                    Text("Kamera: \(model.capturedFrames) Bilder · Encoder: \(model.encodedFrames) Bilder · \(model.encodedBytes) Bytes").monospacedDigit()
+                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
+                }.font(.caption).foregroundColor(BridgeBrand.secondary).padding(.top, 8)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button("Kamera starten") { model.start() }.disabled(model.running || model.availableFPS.isEmpty)
-                Button("Stoppen") { model.stop() }.disabled(!model.running)
-            }
-            .buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity)
-            .background(.regularMaterial)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 12) {
+            Text("iPhone-Kamera für deinen PC").font(.caption).foregroundColor(BridgeBrand.secondary)
+            Spacer()
+            Button("Kamera starten") { model.start() }
+                .buttonStyle(BridgeButtonStyle(primary: true)).disabled(model.running || model.availableFPS.isEmpty)
+            Button("Stoppen") { model.stop() }
+                .buttonStyle(BridgeButtonStyle(primary: false)).disabled(!model.running)
         }
-        .task { if !model.running { model.start() } }
-        .padding()
+        .padding(.horizontal, 20).padding(.vertical, 10)
+        .background(BridgeBrand.surface)
+        .overlay(Rectangle().fill(BridgeBrand.line).frame(height: 1), alignment: .top)
+    }
+
+    private func hint(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundColor(BridgeBrand.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private enum BridgeBrand {
+    static let background = Color(red: 9/255, green: 13/255, blue: 20/255)
+    static let surface = Color(red: 21/255, green: 29/255, blue: 43/255)
+    static let subtle = Color(red: 21/255, green: 59/255, blue: 117/255)
+    static let primary = Color(red: 45/255, green: 107/255, blue: 255/255)
+    static let foreground = Color(red: 237/255, green: 243/255, blue: 255/255)
+    static let secondary = Color(red: 166/255, green: 180/255, blue: 203/255)
+    static let line = Color(red: 41/255, green: 55/255, blue: 77/255)
+}
+
+private struct BridgeCard<Content: View>: View {
+    let title: String
+    let symbol: String
+    let content: Content
+    init(_ title: String, symbol: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.symbol = symbol
+        self.content = content()
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: symbol).font(.system(size: 12, weight: .semibold))
+                .foregroundColor(BridgeBrand.foreground)
+            content
         }
-        .onChange(of: scenePhase) { phase in
-            if phase == .background { model.stop() }
-        }
+        .font(.system(size: 13))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16).background(BridgeBrand.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(BridgeBrand.line))
+    }
+}
+
+private struct BridgeButtonStyle: ButtonStyle {
+    let primary: Bool
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(primary ? .white : BridgeBrand.foreground)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .frame(minHeight: 40)
+            .background(primary ? BridgeBrand.primary : BridgeBrand.subtle)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.75 : 1)
     }
 }
 
