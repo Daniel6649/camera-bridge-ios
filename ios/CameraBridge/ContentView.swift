@@ -189,7 +189,10 @@ final class CameraModel: ObservableObject {
     }
 
     func resumeAutomatically() {
-        guard UIApplication.shared.applicationState == .active else { return }
+        // SwiftUI's initial task can run while UIKit still reports .inactive.
+        // Returning there without a later scene transition leaves capture at 0
+        // forever. Only an actual background state must block camera startup.
+        guard UIApplication.shared.applicationState != .background else { return }
         cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
         guard !requestingCameraPermission else { return }
         updateOrientation(UIDevice.current.orientation)
@@ -349,6 +352,9 @@ struct ContentView: View {
         .onChange(of: scenePhase) { phase in
             if phase == .background { model.stop() }
             if phase == .active { model.resumeAutomatically() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            model.resumeAutomatically()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
             model.updateOrientation(UIDevice.current.orientation)
