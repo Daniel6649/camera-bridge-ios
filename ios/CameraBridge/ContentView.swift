@@ -6,7 +6,13 @@ final class CameraModel: ObservableObject {
     @Published var bitrateMode = "custom"
     @Published var resolution = CaptureResolution.hd720
     @Published var fps = 30
-    @Published var bitrateMbps = 3.0
+    @Published var bitrateMbps = 3.0 {
+        didSet {
+            if bitrateMode == "custom" && bitrateMbps.isFinite && (0.5...50).contains(bitrateMbps) {
+                UserDefaults.standard.set(bitrateMbps, forKey: "customBitrateMbps")
+            }
+        }
+    }
     @Published var availableResolutions: [CaptureResolution] = [.hd720]
     @Published var availableFPS = [30]
     @Published var configuring = false
@@ -30,7 +36,12 @@ final class CameraModel: ObservableObject {
         fps = saved.object(forKey: "captureFPS") == nil ? 30 : saved.integer(forKey: "captureFPS")
         let bitrate = saved.object(forKey: "captureBitrateMbps") == nil ? 3.0 : saved.double(forKey: "captureBitrateMbps")
         bitrateMbps = bitrate.isFinite ? min(50, max(0.5, bitrate)) : 3.0
-        bitrateMode = Self.bitratePresets.first(where: { $0.value == bitrateMbps })?.key ?? "custom"
+        let savedMode = saved.string(forKey: "captureBitrateMode")
+        if savedMode == "custom" || (savedMode.flatMap { Self.bitratePresets[$0] } == bitrateMbps) {
+            bitrateMode = savedMode ?? "custom"
+        } else {
+            bitrateMode = Self.bitratePresets.first(where: { $0.value == bitrateMbps })?.key ?? "custom"
+        }
         let savedZoom = saved.object(forKey: "captureZoom") == nil ? 1.0 : saved.double(forKey: "captureZoom")
         zoom = savedZoom.isFinite && savedZoom >= 1 ? savedZoom : 1
         refreshFormats()
@@ -74,12 +85,23 @@ final class CameraModel: ObservableObject {
                 saved.set(resolution.rawValue, forKey: "captureResolution")
                 saved.set(fps, forKey: "captureFPS")
                 saved.set(Double(bitrate) / 1_000_000, forKey: "captureBitrateMbps")
+                saved.set(self?.bitrateMode, forKey: "captureBitrateMode")
             }
         }
     }
     static let bitratePresets: [String: Double] = ["low": 3, "medium": 10, "high": 25]
     func selectBitrate(_ mode: String) {
-        if let value = Self.bitratePresets[mode] { bitrateMbps = value }
+        guard mode == "custom" || Self.bitratePresets[mode] != nil else { return }
+        let saved = UserDefaults.standard
+        let previousValue = bitrateMbps
+        bitrateMode = mode
+        if let value = Self.bitratePresets[mode] {
+            bitrateMbps = value
+        } else {
+            let value = saved.object(forKey: "customBitrateMbps") == nil ? previousValue : saved.double(forKey: "customBitrateMbps")
+            bitrateMbps = value.isFinite ? min(50, max(0.5, value)) : previousValue
+        }
+        saved.set(mode, forKey: "captureBitrateMode")
     }
     func updateOrientation() {
         let value: BridgeOrientation
@@ -243,7 +265,7 @@ struct ContentView: View {
                     .foregroundColor(BridgeBrand.secondary)
             }
             Spacer()
-            Text("0.5.2").font(.caption2)
+            Text("0.5.3").font(.caption2)
                 .foregroundColor(BridgeBrand.secondary)
                 .padding(.horizontal, 9).padding(.vertical, 5)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(BridgeBrand.line))
@@ -303,12 +325,12 @@ struct ContentView: View {
                     Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s")
                         .monospacedDigit().foregroundColor(BridgeBrand.foreground)
                 }
-                Picker("Bitrate", selection: $model.bitrateMode) {
+                Picker("Bitrate", selection: Binding(get: { model.bitrateMode }, set: { model.selectBitrate($0) })) {
                     Text("Niedrig").tag("low")
                     Text("Mittel").tag("medium")
                     Text("Hoch").tag("high")
                     Text("Custom").tag("custom")
-                }.pickerStyle(.segmented).onChange(of: model.bitrateMode) { model.selectBitrate($0) }
+                }.pickerStyle(.segmented)
                 if model.bitrateMode == "custom" {
                 Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
                     .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
