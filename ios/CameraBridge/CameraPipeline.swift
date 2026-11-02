@@ -30,6 +30,7 @@ extension BridgeOrientation {
 /// Published callbacks only change before capture starts; the UI hops to MainActor.
 final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
+    let previewLayer = AVCaptureVideoPreviewLayer()
     var onStatus: (@Sendable (String, Bool) -> Void)?
     var onProgress: (@Sendable (UInt64, UInt64) -> Void)?
     var onCaptureProgress: (@Sendable (UInt64) -> Void)?
@@ -58,6 +59,12 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var captureOrientation = BridgeOrientation.portrait
     private var videoOutput: AVCaptureVideoDataOutput?
     private var orientationChange: DispatchWorkItem?
+    private var healthTimer: DispatchSourceTimer?
+    private var recoveryJob: DispatchWorkItem?
+    private var recoveryAttempts = 0
+    private var framesSinceRecovery = 0
+    private var lastCaptureAt = ProcessInfo.processInfo.systemUptime
+    private var lastEncodedAt = ProcessInfo.processInfo.systemUptime
     private var configurationRequestID: String?
 
     func setBattery(percent: Int, charging: Bool) {
@@ -66,6 +73,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     override init() {
         super.init()
+        // Bind once before capture starts. Rotation/standby only move or hide this layer.
+        previewLayer.videoGravity = .resizeAspect
+        previewLayer.session = session
         transport.onStatus = { [weak self] message in self?.onNetworkStatus?(message) }
         transport.onControl = { [weak self] command, value in
             self?.onNetworkStatus?("Desktop control \(command), value \(value) received (remote controls are not implemented).")
@@ -88,12 +98,20 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard orientation != captureOrientation else { return }
         captureOrientation = orientation
         guard active, let connection = videoOutput?.connection(with: .video), connection.isVideoOrientationSupported else { return }
-        generation &+= 1 // Discard old encoder callbacks after a rotation.
+        generation &+= 1
+        recoveryJob?.cancel(); recoveryJob = nil
+        recoveryAttempts = 0
+        session.beginConfiguration()
         connection.videoOrientation = orientation.videoOrientation
+        if let preview = previewLayer.connection, preview.isVideoOrientationSupported {
+            preview.videoOrientation = orientation.videoOrientation
+        }
+        session.commitConfiguration()
         encodingFailed = false
         tearDownEncoder()
-        transport.disconnect()
-        onStatus?(orientation.isPortrait ? "Wechsle ins Hochformat …" : "Wechsle ins Querformat …", true)
+        lastEncodedAt = ProcessInfo.processInfo.systemUptime
+        // Keep the listener until a new frame can renegotiate the stream.
+        onStatus?(orientation.isPortrait ? "Hochformat …" : "Querformat …", true)
     }
 
     static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
@@ -116,6 +134,8 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 return
             }
             if replaceCurrent {
+                healthTimer?.cancel(); healthTimer = nil
+                recoveryJob?.cancel(); recoveryJob = nil
                 active = false
                 turnOffTorch()
                 if session.isRunning { session.stopRunning() }
@@ -136,6 +156,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     do {
                         self.requestedResolution = resolution
                         try self.configure(resolution: resolution, fps: fps, frontCamera: frontCamera)
+                        if let preview = self.previewLayer.connection, preview.isVideoOrientationSupported {
+                            preview.videoOrientation = self.captureOrientation.videoOrientation
+                        }
                         self.applyZoom(zoom)
                         self.frames = 0
                         self.bytes = 0
@@ -150,7 +173,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                         self.onProgress?(0, 0)
                         self.onCaptureProgress?(0)
                         self.active = true
+                        self.lastCaptureAt = ProcessInfo.processInfo.systemUptime
+                        self.lastEncodedAt = self.lastCaptureAt
                         self.session.startRunning()
+                        self.startHealthWatchdog()
                         self.onStatus?("Kamera gestartet – warte auf das erste Bild.", true)
                         self.queue.asyncAfter(deadline: .now() + 5) {
                             guard self.generation == requestGeneration, self.active,
@@ -171,6 +197,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         queue.async { [self] in
             generation &+= 1 // Cancels a pending permission completion.
             orientationChange?.cancel()
+            healthTimer?.cancel(); healthTimer = nil
+            recoveryJob?.cancel(); recoveryJob = nil
+            recoveryAttempts = 0
             active = false
             turnOffTorch()
             if session.isRunning { session.stopRunning() }
@@ -325,6 +354,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard active, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lastCaptureAt = ProcessInfo.processInfo.systemUptime
         capturedFrames &+= 1
         if capturedFrames == 1 || capturedFrames % 30 == 0 { onCaptureProgress?(capturedFrames) }
         // Preview is independent of encoding; configure from actual camera buffers.
@@ -347,7 +377,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             } catch {
                 encodingFailed = true
                 tearDownEncoder()
-                onStatus?("Kameravorschau läuft; Videoübertragung nicht verfügbar: \(error.localizedDescription)", true)
+                scheduleRecovery("Videoübertragung: \(error.localizedDescription)", restartCapture: false)
                 return
             }
         }
@@ -363,6 +393,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     guard self.active, !self.encodingFailed, self.generation == currentGeneration else { return }
                     guard status == noErr else { self.failEncoding(status); return }
                     guard size > 0 else { return }
+                    self.lastEncodedAt = ProcessInfo.processInfo.systemUptime
+                    self.framesSinceRecovery += 1
+                    if self.framesSinceRecovery >= self.requestedFPS * 3 { self.recoveryAttempts = 0 }
                     self.frames &+= 1
                     self.bytes &+= UInt64(size)
                     if let frame {
@@ -379,13 +412,54 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard !encodingFailed else { return }
         encodingFailed = true
         tearDownEncoder()
-        transport.disconnect()
-        onStatus?("Kameravorschau läuft; Video-Encoder meldet Fehler \(status). Bitte erneut starten.", true)
+        scheduleRecovery("Video-Encoder: Fehler \(status)", restartCapture: false)
+    }
+
+    private func startHealthWatchdog() {
+        healthTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.active, !self.session.isInterrupted, !self.encodingFailed else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - self.lastCaptureAt > 8 || now - self.lastEncodedAt > 8 {
+                self.scheduleRecovery("Kein neues Videobild", restartCapture: true)
+            }
+        }
+        healthTimer = timer
+        timer.resume()
+    }
+
+    private func scheduleRecovery(_ reason: String, restartCapture: Bool) {
+        guard active, recoveryJob == nil else { return }
+        guard recoveryAttempts < 3 else {
+            onStatus?(reason + ". Bitte Kamera stoppen und erneut starten.", true)
+            return
+        }
+        recoveryAttempts += 1
+        framesSinceRecovery = 0
+        let current = generation
+        let job = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoveryJob = nil
+            guard self.active, self.generation == current else { return }
+            self.encodingFailed = false
+            self.lastEncodedAt = ProcessInfo.processInfo.systemUptime
+            if restartCapture {
+                self.start(resolution: self.requestedResolution, fps: self.requestedFPS, bitrate: self.requestedBitrate,
+                    zoom: Double(self.captureDevice?.videoZoomFactor ?? 1), host: self.requestedHost,
+                    mode: self.requestedConnection, frontCamera: self.requestedFrontCamera,
+                    replaceCurrent: true, requestID: self.configurationRequestID)
+            }
+        }
+        recoveryJob = job
+        queue.asyncAfter(deadline: .now() + Double(recoveryAttempts), execute: job)
+        onStatus?(reason + " – starte erneut …", true)
     }
 
     private func tearDownEncoder() {
         if let encoder {
-            VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid)
+            // Live video discards old frames; waiting for a drain can stall rotation.
             VTCompressionSessionInvalidate(encoder)
         }
         encoder = nil

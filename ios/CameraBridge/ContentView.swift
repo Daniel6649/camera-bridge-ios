@@ -286,7 +286,7 @@ struct ContentView: View {
     }
     private func previewColumn(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            CameraPreview(session: standby ? nil : model.pipeline.session, orientation: model.orientation.videoOrientation)
+            CameraPreview(previewLayer: model.pipeline.previewLayer, enabled: !standby)
                 .frame(maxWidth: .infinity).frame(height: height)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -615,29 +615,34 @@ private struct BridgeButtonStyle: ButtonStyle {
     }
 }
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession?
-    let orientation: AVCaptureVideoOrientation
+    let previewLayer: AVCaptureVideoPreviewLayer
+    let enabled: Bool
     func makeUIView(context: Context) -> PreviewView {
-        let view = PreviewView()
-        view.orientation = orientation
-        view.previewLayer.session = session
-        view.previewLayer.videoGravity = .resizeAspect
-        return view
+        PreviewView(previewLayer: previewLayer)
     }
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        uiView.orientation = orientation
+        uiView.attachPreview()
+        uiView.isHidden = !enabled
         uiView.setNeedsLayout()
-        if uiView.previewLayer.session !== session { uiView.previewLayer.session = session }
     }
 }
 final class PreviewView: UIView {
-    var orientation: AVCaptureVideoOrientation = .portrait
-    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-    var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    private let cameraLayer: AVCaptureVideoPreviewLayer
+    init(previewLayer: AVCaptureVideoPreviewLayer) {
+        cameraLayer = previewLayer
+        super.init(frame: .zero)
+        attachPreview()
+    }
+    required init?(coder: NSCoder) { fatalError("Use init(previewLayer:)") }
+    func attachPreview() {
+        if cameraLayer.superlayer !== layer { layer.addSublayer(cameraLayer) }
+    }
     override func layoutSubviews() {
         super.layoutSubviews()
-        if let connection = previewLayer.connection, connection.isVideoOrientationSupported {
-            connection.videoOrientation = orientation
-        }
+        guard cameraLayer.superlayer === layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cameraLayer.frame = bounds
+        CATransaction.commit()
     }
 }
