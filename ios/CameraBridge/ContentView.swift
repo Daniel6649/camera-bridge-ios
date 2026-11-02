@@ -151,35 +151,47 @@ final class CameraModel: ObservableObject {
 struct ContentView: View {
     @StateObject private var model = CameraModel()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("automaticCameraStart") private var automaticStart = true
     @AppStorage("automaticBlackScreen") private var automaticBlackScreen = true
     @State private var standby = false
     @State private var brightness: CGFloat?
     @State private var lastActivity = Date()
     var body: some View {
-        GeometryReader { geometry in
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                if geometry.size.width > geometry.size.height {
-                    HStack(alignment: .top, spacing: 18) {
-                        previewColumn.frame(width: (geometry.size.width - 50) * 0.48)
-                        ScrollView { settings }
-                    }
-                } else {
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            previewColumn.frame(height: geometry.size.width * 1.12)
-                            settings
+        ScrollViewReader { proxy in
+            GeometryReader { geometry in
+                let landscape = geometry.size.width > geometry.size.height && !dynamicTypeSize.isAccessibilitySize
+                VStack(alignment: .leading, spacing: landscape ? 8 : 12) {
+                    header(compact: landscape)
+                    if landscape {
+                        HStack(alignment: .top, spacing: 12) {
+                            ScrollView {
+                                previewColumn(height: max(100, geometry.size.height - 120))
+                            }
+                            .frame(width: (geometry.size.width - 36) * 0.44)
+                            ScrollView { settings }
+                        }
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                previewColumn(height: dynamicTypeSize.isAccessibilitySize ? 110 : min(220, max(140, geometry.size.height * 0.29)))
+                                settings
+                            }
                         }
                     }
                 }
-            }.padding(16)
+                .padding(landscape ? 12 : 16)
+            }
+            .safeAreaInset(edge: .bottom) {
+                actionBar { destination in
+                    withAnimation { proxy.scrollTo(destination, anchor: .top) }
+                }
+            }
         }
         .background(BridgeBrand.background.ignoresSafeArea())
         .foregroundColor(BridgeBrand.foreground)
         .accentColor(BridgeBrand.primary)
         .preferredColorScheme(.dark)
-        .safeAreaInset(edge: .bottom) { actionBar }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in lastActivity = Date() })
         .overlay {
             if standby {
@@ -223,8 +235,8 @@ struct ContentView: View {
     private var settings: some View {
         VStack(spacing: 14) {
             connectionCard
-            videoCard
-            zoomCard
+            videoCard.id("video")
+            zoomCard.id("zoom")
             cameraCard
             startupCard
             diagnosticsCard
@@ -244,10 +256,8 @@ struct ContentView: View {
     }
     private var startupCard: some View {
         BridgeCard("Start & Bildschirm", symbol: "power") {
-            Picker("Kamerastart", selection: $automaticStart) {
-                Text("Automatisch").tag(true)
-                Text("Manuell").tag(false)
-            }.pickerStyle(.segmented)
+            BridgeChoice("Kamerastart", selection: $automaticStart,
+                         options: [("Automatisch", true), ("Manuell", false)])
             hint("Automatisch: beim Öffnen und beim Anschließen. App geöffnet lassen.")
             Toggle("Nach 30 Sekunden abdunkeln", isOn: $automaticBlackScreen).tint(BridgeBrand.primary)
             Button("Bildschirm abdunkeln") { sleepScreen() }
@@ -255,14 +265,16 @@ struct ContentView: View {
             hint("Antippen weckt den Bildschirm. Die Seitentaste unterbricht die Kamera.")
         }
     }
-    private var header: some View {
+    private func header(compact: Bool) -> some View {
         HStack(spacing: 10) {
-            Image("BrandLogo").resizable().scaledToFit().frame(width: 40, height: 40)
+            Image("BrandLogo").resizable().scaledToFit().frame(width: compact ? 28 : 36, height: compact ? 28 : 36)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Camera Bridge").font(.system(size: 20, weight: .semibold))
-                Text("IPHONE CAMERA").font(.system(size: 9, weight: .medium)).tracking(2)
-                    .foregroundColor(BridgeBrand.secondary)
+                Text("Camera Bridge").font(.headline)
+                if !compact && !dynamicTypeSize.isAccessibilitySize {
+                    Text("IPHONE CAMERA").font(.caption2.weight(.medium)).tracking(2)
+                        .foregroundColor(BridgeBrand.secondary)
+                }
             }
             Spacer()
             Text("0.5.3").font(.caption2)
@@ -271,17 +283,17 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(BridgeBrand.line))
         }
     }
-    private var previewColumn: some View {
+    private func previewColumn(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             CameraPreview(session: standby ? nil : model.pipeline.session, orientation: model.orientation.videoOrientation)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity).frame(height: height)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(BridgeBrand.line))
-                .layoutPriority(1)
+                .accessibilityLabel("Kameravorschau")
             VStack(alignment: .leading, spacing: 6) {
-                Text(model.status).font(.system(size: 13, weight: .medium))
-                Text(model.networkStatus).font(.system(size: 11))
+                Text(model.status).font(.subheadline.weight(.medium))
+                Text(model.networkStatus).font(.caption)
                     .foregroundColor(BridgeBrand.secondary)
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -289,9 +301,9 @@ struct ContentView: View {
     }
     private var connectionCard: some View {
         BridgeCard("Verbindung", symbol: "cable.connector") {
-            Picker("Verbindung", selection: $model.connectionMode) {
-                ForEach(BridgeConnection.allCases) { mode in Text(mode.rawValue).tag(mode) }
-            }.pickerStyle(.segmented).disabled(model.running)
+            BridgeChoice("Verbindung", selection: $model.connectionMode,
+                         options: BridgeConnection.allCases.map { ($0.rawValue, $0) })
+                .disabled(model.running)
             if model.connectionMode == .usb {
                 hint("USB verbinden und dem Computer vertrauen.")
             } else {
@@ -304,37 +316,53 @@ struct ContentView: View {
     }
     private var videoCard: some View {
         BridgeCard("Videoformat", symbol: "slider.horizontal.3") {
-            HStack {
-                Picker("Auflösung", selection: $model.resolution) {
-                    ForEach(model.availableResolutions) { resolution in
-                        Text(resolution.rawValue).tag(resolution)
-                    }
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Auflösung")
+                    Spacer()
+                    Picker("Auflösung", selection: $model.resolution) {
+                        ForEach(model.availableResolutions) { resolution in
+                            Text(resolution.rawValue).tag(resolution)
+                        }
+                    }.labelsHidden().frame(minHeight: 44)
                 }
-                Spacer()
-                Picker("Bildrate", selection: $model.fps) {
-                    ForEach(model.availableFPS, id: \.self) { fps in Text("\(fps) FPS").tag(fps) }
+                HStack {
+                    Text("Bildrate")
+                    Spacer()
+                    Picker("Bildrate", selection: $model.fps) {
+                        ForEach(model.availableFPS, id: \.self) { fps in Text("\(fps) FPS").tag(fps) }
+                    }.labelsHidden().frame(minHeight: 44)
                 }
             }
             .disabled(model.configuring)
             .tint(BridgeBrand.link)
             .onChange(of: model.resolution) { _ in model.refreshFormats() }
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Zielbitrate")
-                    Spacer()
-                    Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s")
-                        .monospacedDigit().foregroundColor(BridgeBrand.foreground)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Zielbitrate")
+                        bitrateValue
+                    }
+                } else {
+                    HStack {
+                        Text("Zielbitrate")
+                        Spacer()
+                        bitrateValue
+                    }
                 }
                 Picker("Bitrate", selection: Binding(get: { model.bitrateMode }, set: { model.selectBitrate($0) })) {
                     Text("Niedrig").tag("low")
                     Text("Mittel").tag("medium")
                     Text("Hoch").tag("high")
-                    Text("Custom").tag("custom")
-                }.pickerStyle(.segmented)
+                    Text("Eigene").tag("custom")
+                }.pickerStyle(.menu).frame(minHeight: 44)
+                .accessibilityHint("Niedrig 3, Mittel 10, Hoch 25 oder eigene Bitrate")
                 if model.bitrateMode == "custom" {
                 Slider(value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                    .frame(minHeight: 44)
                     .accessibilityLabel("Zielbitrate in Mbit pro Sekunde")
-                Stepper("Bitrate fein einstellen", value: $model.bitrateMbps, in: 0.5...50, step: 0.5)
+                    .accessibilityValue("\(model.bitrateMbps, specifier: "%.1f")")
+                Stepper("Bitrate ±0,5", value: $model.bitrateMbps, in: 0.5...50, step: 0.5).frame(minHeight: 44)
                 }
             }.disabled(model.configuring)
             if model.running {
@@ -344,10 +372,14 @@ struct ContentView: View {
             }
         }
     }
+    private var bitrateValue: some View {
+        Text("\(model.bitrateMbps, specifier: "%.1f") Mbit/s")
+            .monospacedDigit().foregroundColor(BridgeBrand.foreground)
+    }
     private var zoomCard: some View {
         BridgeCard("Zoom", symbol: "plus.magnifyingglass") {
             HStack {
-                Text("\(model.zoom, specifier: "%.1f")×").font(.system(size: 20, weight: .medium)).monospacedDigit()
+                Text("\(model.zoom, specifier: "%.1f")×").font(.title3.weight(.medium)).monospacedDigit()
                 Spacer()
                 Button("1×") { model.zoom = min(model.maximumZoom, max(model.minimumZoom, 1)) }
                     .buttonStyle(BridgeButtonStyle(primary: false))
@@ -356,17 +388,18 @@ struct ContentView: View {
                 get: { log2(max(model.minimumZoom, min(model.maximumZoom, model.zoom))) },
                 set: { model.zoom = pow(2, $0) }
             ), in: log2(max(0.01, model.minimumZoom))...log2(max(model.minimumZoom + 0.001, model.maximumZoom)))
+                .frame(minHeight: 44)
                 .accessibilityLabel("Kamerazoom")
+                .accessibilityValue("\(model.zoom, specifier: "%.1f")fach")
         }
         .disabled(!model.running || model.configuring || model.maximumZoom <= model.minimumZoom)
         .onChange(of: model.zoom) { model.setZoom($0) }
     }
     private var cameraCard: some View {
         BridgeCard("Kamera & Licht", symbol: "camera") {
-            Picker("Kamera", selection: $model.frontCamera) {
-                Text("Rückkamera").tag(false)
-                Text("Frontkamera").tag(true)
-            }.pickerStyle(.segmented).disabled(model.running)
+            BridgeChoice("Kamera", selection: $model.frontCamera,
+                         options: [("Rückkamera", false), ("Frontkamera", true)])
+                .disabled(model.running)
                 .onChange(of: model.frontCamera) { _ in model.refreshFormats() }
             Toggle("Licht", isOn: $model.torch)
                 .tint(BridgeBrand.primary)
@@ -387,21 +420,43 @@ struct ContentView: View {
             }.tint(BridgeBrand.link)
         }
     }
-    private var actionBar: some View {
-        HStack(spacing: 12) {
-            Text("iPhone-Kamera für deinen PC").font(.caption).foregroundColor(BridgeBrand.secondary)
-            Spacer()
-            Button("Kamera starten") { model.start() }
-                .buttonStyle(BridgeButtonStyle(primary: true)).disabled(model.running || model.availableFPS.isEmpty)
-            Button("Stoppen") { model.stop() }
-                .buttonStyle(BridgeButtonStyle(primary: false)).disabled(!model.running)
+    private func actionBar(scrollTo: @escaping (String) -> Void) -> some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 8) {
+                    quickActions(scrollTo: scrollTo)
+                    captureAction
+                }
+            } else {
+                HStack(spacing: 8) {
+                    quickActions(scrollTo: scrollTo)
+                    captureAction
+                }
+            }
         }
-        .padding(.horizontal, 20).padding(.vertical, 10)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .background(BridgeBrand.surface)
         .overlay(Rectangle().fill(BridgeBrand.line).frame(height: 1), alignment: .top)
     }
+    private func quickActions(scrollTo: @escaping (String) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Button("Video") { scrollTo("video") }
+                .accessibilityHint("Zu Videoformat und Bitrate springen")
+            Button("Zoom") { scrollTo("zoom") }
+                .accessibilityHint("Zur Zoomsteuerung springen")
+        }
+        .buttonStyle(BridgeButtonStyle(primary: false, fillsWidth: true))
+    }
+    private var captureAction: some View {
+        Button(model.running ? "Stoppen" : "Starten") {
+            if model.running { model.stop() } else { model.start() }
+        }
+        .buttonStyle(BridgeButtonStyle(primary: true, fillsWidth: true))
+        .disabled(!model.running && model.availableFPS.isEmpty)
+        .accessibilityLabel(model.running ? "Kamera stoppen" : "Kamera starten")
+    }
     private func hint(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundColor(BridgeBrand.secondary)
+        Text(text).font(.caption).foregroundColor(BridgeBrand.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -426,26 +481,69 @@ private struct BridgeCard<Content: View>: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: symbol).font(.system(size: 12, weight: .semibold))
+            Label(title, systemImage: symbol).font(.subheadline.weight(.semibold))
                 .foregroundColor(BridgeBrand.foreground)
             content
         }
-        .font(.system(size: 13))
+        .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16).background(BridgeBrand.surface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(BridgeBrand.line))
     }
 }
+private struct BridgeChoice<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [(String, Value)]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.isEnabled) private var enabled
+    init(_ title: String, selection: Binding<Value>, options: [(String, Value)]) {
+        self.title = title
+        self._selection = selection
+        self.options = options
+    }
+    var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 4) { choices }
+            } else {
+                HStack(spacing: 4) { choices }
+            }
+        }
+        .padding(4).background(BridgeBrand.background)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .opacity(enabled ? 1 : 0.4)
+    }
+    private var choices: some View {
+        ForEach(options.indices, id: \.self) { index in
+            Button { selection = options[index].1 } label: {
+                Text(options[index].0)
+                    .font(.subheadline.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 6).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(selection == options[index].1 ? BridgeBrand.primary : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title): \(options[index].0)")
+            .accessibilityValue(selection == options[index].1 ? "Ausgewählt" : "Nicht ausgewählt")
+        }
+    }
+}
 private struct BridgeButtonStyle: ButtonStyle {
     let primary: Bool
+    var fillsWidth = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundColor(primary ? .white : BridgeBrand.foreground)
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .frame(minHeight: 40)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: 44)
+            .contentShape(Rectangle())
             .background(primary ? BridgeBrand.primary : BridgeBrand.subtle)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.75 : 1)
