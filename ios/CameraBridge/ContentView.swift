@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit.UIGestureRecognizerSubclass
 @MainActor
 final class CameraModel: ObservableObject {
     @Published var orientation = BridgeOrientation.portrait
@@ -192,7 +193,7 @@ struct ContentView: View {
         .foregroundColor(BridgeBrand.foreground)
         .accentColor(BridgeBrand.primary)
         .preferredColorScheme(.dark)
-        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in lastActivity = Date() })
+        .background(TouchActivityObserver { lastActivity = Date() }.allowsHitTesting(false))
         .overlay {
             if standby {
                 Color.black.ignoresSafeArea().contentShape(Rectangle())
@@ -459,6 +460,70 @@ struct ContentView: View {
         Text(text).font(.caption).foregroundColor(BridgeBrand.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
+}
+// Observes the window's touch stream without competing with controls or scrolling.
+private struct TouchActivityObserver: UIViewRepresentable {
+    let onActivity: () -> Void
+    func makeUIView(context: Context) -> TouchActivityView {
+        let view = TouchActivityView(frame: .zero)
+        view.recognizer.onActivity = onActivity
+        return view
+    }
+    func updateUIView(_ uiView: TouchActivityView, context: Context) {
+        uiView.recognizer.onActivity = onActivity
+    }
+    static func dismantleUIView(_ uiView: TouchActivityView, coordinator: ()) {
+        uiView.detach()
+        uiView.recognizer.onActivity = nil
+    }
+}
+private final class TouchActivityView: UIView {
+    let recognizer = PassiveTouchActivityRecognizer(target: nil, action: nil)
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesBegan = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.requiresExclusiveTouchType = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        detach()
+        window?.addGestureRecognizer(recognizer)
+    }
+    func detach() { recognizer.view?.removeGestureRecognizer(recognizer) }
+}
+private final class PassiveTouchActivityRecognizer: UIGestureRecognizer {
+    var onActivity: (() -> Void)?
+    private var activeTouches = Set<UITouch>()
+    // Never recognize a gesture or establish a failure dependency. Staying possible
+    // until touch-up lets long slider/scroll movements continue resetting the timer.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        activeTouches.formUnion(touches)
+        onActivity?()
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        onActivity?()
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        finish(touches)
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        finish(touches)
+    }
+    private func finish(_ touches: Set<UITouch>) {
+        activeTouches.subtract(touches)
+        onActivity?()
+        if activeTouches.isEmpty { state = .failed }
+    }
+    override func reset() {
+        super.reset()
+        activeTouches.removeAll()
+    }
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }
 private enum BridgeBrand {
     static let background = Color(red: 9/255, green: 13/255, blue: 20/255)
