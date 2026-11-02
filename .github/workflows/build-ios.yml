@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: camera-bridge-${{ github.ref }}
+  group: ios-device-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

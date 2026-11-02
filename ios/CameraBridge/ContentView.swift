@@ -278,7 +278,7 @@ struct ContentView: View {
                 }
             }
             Spacer()
-            Text("0.5.3").font(.caption2)
+            Text("0.5.4").font(.caption2)
                 .foregroundColor(BridgeBrand.secondary)
                 .padding(.horizontal, 9).padding(.vertical, 5)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(BridgeBrand.line))
