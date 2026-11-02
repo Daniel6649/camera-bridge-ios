@@ -5,5 +5,6 @@ PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 mkdir -p "$PROJECT_DIR/build/wire-check"
 xcrun swiftc "$PROJECT_DIR/CameraBridge/IVCamTransport.swift" \
     "$PROJECT_DIR/tests/WireFormatChecks.swift" \
+    "$PROJECT_DIR/tests/USBRecoveryChecks.swift" \
     -o "$PROJECT_DIR/build/wire-check/check"
 "$PROJECT_DIR/build/wire-check/check"

@@ -76,6 +76,7 @@ struct WireFormatChecks {
                 preconditionFailure("Oversized USB frame was accepted")
             } catch USBFrameDecoder.DecodeError.oversized { }
         } catch { preconditionFailure("USB decoder failed: \(error)") }
+        USBRecoveryChecks.run()
         print("Wire-format golden checks passed. This does not verify desktop video interoperability.")
     }
 

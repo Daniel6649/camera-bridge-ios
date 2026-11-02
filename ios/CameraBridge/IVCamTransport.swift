@@ -37,6 +37,10 @@ final class IVCamTransport: @unchecked Sendable {
     private var connection: NWConnection?
     private var browser: NWBrowser?
     private var listener: NWListener?
+    private let usbPort: NWEndpoint.Port
+    private var usbSessionWanted = false
+    private var usbRetry: DispatchWorkItem?
+    private var usbRetryAttempt = 0
     private var mode = BridgeConnection.wifi
     private var usbDecoder = USBFrameDecoder()
     private struct Settings: Sendable {
@@ -59,6 +63,9 @@ final class IVCamTransport: @unchecked Sendable {
     private var statusRequest: UInt32 = 0
     private let maximumPending = 32
 
+    // A configurable loopback port lets regression checks use an isolated port.
+    init(usbPort: NWEndpoint.Port = 5895) { self.usbPort = usbPort }
+
     func connect(host: String, mode: BridgeConnection = .wifi, port: UInt16 = 5895, width: UInt32, height: UInt32,
                  fps: UInt32, bitrate: UInt32, name: String, bridgeState: Data? = nil) {
         queue.async { [self] in
@@ -70,6 +77,7 @@ final class IVCamTransport: @unchecked Sendable {
                 return
             }
             self.mode = mode
+            usbSessionWanted = mode == .usb
             settings = Settings(width: width, height: height, fps: fps, bitrate: bitrate, name: name)
             self.bridgeState = bridgeState
             if mode == .usb {
@@ -109,9 +117,10 @@ final class IVCamTransport: @unchecked Sendable {
     }
 
     private func listenUSB(generation current: UInt64) {
+        guard generation == current, usbSessionWanted, settings != nil else { return }
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 5895)
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: usbPort)
         do {
             let server = try NWListener(using: parameters)
             listener = server
@@ -119,7 +128,7 @@ final class IVCamTransport: @unchecked Sendable {
                 guard let self, self.generation == current else { return }
                 switch state {
                 case .ready: self.onStatus?("USB bereit – iPhone per Kabel verbinden, diesem Computer vertrauen und iVCam am PC öffnen.")
-                case .failed(let error): self.fail("USB: \(error.localizedDescription)")
+                case .failed(let error), .waiting(let error): self.fail("USB: \(error.localizedDescription)")
                 default: break
                 }
             }
@@ -178,6 +187,7 @@ final class IVCamTransport: @unchecked Sendable {
             guard let self, self.generation == current else { return }
             if let error { self.fail(error.localizedDescription); return }
             self.ready = true
+            self.usbRetryAttempt = 0
             if let state = self.bridgeState {
                 self.enqueue(Self.packet(type: 0x10, timestamp: 0x00010003, payload: state), socket: socket)
             }
@@ -306,19 +316,39 @@ final class IVCamTransport: @unchecked Sendable {
     }
 
     private func fail(_ message: String) {
-        let previousSettings = settings
-        let previousBridgeState = bridgeState
-        let retryUSB = mode == .usb && listener != nil && connection != nil
-        close()
+        // Listening can fail before a desktop has ever connected (for example,
+        // when the loopback port is temporarily occupied). Session intent, not
+        // the existence of either Network object, determines whether to recover.
+        let retryUSB = mode == .usb && usbSessionWanted && settings != nil
+        close(resetSession: !retryUSB)
         generation &+= 1
-        onStatus?("USB/Verbindung getrennt: \(message)")
         if retryUSB {
-            settings = previousSettings
-            bridgeState = previousBridgeState
-            listenUSB(generation: generation)
+            let delays: [Double] = [0.5, 1, 2, 4, 8]
+            let delay = delays[usbRetryAttempt]
+            usbRetryAttempt = min(usbRetryAttempt + 1, delays.count - 1)
+            let current = generation
+            let retry = DispatchWorkItem { [weak self] in
+                guard let self, self.generation == current, self.usbSessionWanted,
+                      self.mode == .usb, self.connection == nil, self.listener == nil else { return }
+                self.usbRetry = nil
+                self.listenUSB(generation: current)
+            }
+            usbRetry = retry
+            onStatus?("USB/Verbindung getrennt: \(message). Neuer USB-Versuch in \(delay) s …")
+            queue.asyncAfter(deadline: .now() + delay, execute: retry)
+        } else {
+            onStatus?("USB/Verbindung getrennt: \(message)")
         }
     }
-    private func close() {
+    private func close(resetSession: Bool = true) {
+        usbRetry?.cancel()
+        usbRetry = nil
+        if resetSession {
+            usbSessionWanted = false
+            usbRetryAttempt = 0
+            settings = nil
+            bridgeState = nil
+        }
         listener?.stateUpdateHandler = nil
         listener?.newConnectionHandler = nil
         listener?.cancel()
@@ -331,8 +361,6 @@ final class IVCamTransport: @unchecked Sendable {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
-        settings = nil
-        bridgeState = nil
         mediaStarted = false
         ready = false
         pending = 0
