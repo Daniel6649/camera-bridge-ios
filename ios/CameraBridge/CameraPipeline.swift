@@ -56,9 +56,8 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var currentWidth = 1280
     private var currentHeight = 720
     private var requestedResolution = CaptureResolution.hd720
-    private var captureOrientation = BridgeOrientation.portrait
+    private let captureOrientation = BridgeOrientation.landscapeRight
     private var videoOutput: AVCaptureVideoDataOutput?
-    private var orientationChange: DispatchWorkItem?
     private var healthTimer: DispatchSourceTimer?
     private var recoveryJob: DispatchWorkItem?
     private var recoveryAttempts = 0
@@ -83,35 +82,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         transport.onBridgeControl = { [weak self] request in
             self?.queue.async { [weak self] in self?.handleBridgeRequest(request) }
         }
-    }
-
-    func setOrientation(_ orientation: BridgeOrientation) {
-        queue.async { [self] in
-            orientationChange?.cancel()
-            let change = DispatchWorkItem { [weak self] in self?.applyOrientation(orientation) }
-            orientationChange = change
-            queue.asyncAfter(deadline: .now() + (active ? 0.25 : 0), execute: change)
-        }
-    }
-
-    private func applyOrientation(_ orientation: BridgeOrientation) {
-        guard orientation != captureOrientation else { return }
-        captureOrientation = orientation
-        guard active, let connection = videoOutput?.connection(with: .video), connection.isVideoOrientationSupported else { return }
-        generation &+= 1
-        recoveryJob?.cancel(); recoveryJob = nil
-        recoveryAttempts = 0
-        session.beginConfiguration()
-        connection.videoOrientation = orientation.videoOrientation
-        if let preview = previewLayer.connection, preview.isVideoOrientationSupported {
-            preview.videoOrientation = orientation.videoOrientation
-        }
-        session.commitConfiguration()
-        encodingFailed = false
-        tearDownEncoder()
-        lastEncodedAt = ProcessInfo.processInfo.systemUptime
-        // Keep the listener until a new frame can renegotiate the stream.
-        onStatus?(orientation.isPortrait ? "Hochformat …" : "Querformat …", true)
     }
 
     static func supportedFrameRates(resolution: CaptureResolution, frontCamera: Bool) -> [Int] {
@@ -196,7 +166,6 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func stop() {
         queue.async { [self] in
             generation &+= 1 // Cancels a pending permission completion.
-            orientationChange?.cancel()
             healthTimer?.cancel(); healthTimer = nil
             recoveryJob?.cancel(); recoveryJob = nil
             recoveryAttempts = 0

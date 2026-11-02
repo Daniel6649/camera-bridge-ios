@@ -3,7 +3,6 @@ import SwiftUI
 import UIKit.UIGestureRecognizerSubclass
 @MainActor
 final class CameraModel: ObservableObject {
-    @Published var orientation = BridgeOrientation.portrait
     @Published var bitrateMode = "custom"
     @Published var resolution = CaptureResolution.hd720
     @Published var fps = 30
@@ -104,18 +103,6 @@ final class CameraModel: ObservableObject {
         }
         saved.set(mode, forKey: "captureBitrateMode")
     }
-    func updateOrientation() {
-        let value: BridgeOrientation
-        switch UIDevice.current.orientation {
-        case .portrait: value = .portrait
-        case .portraitUpsideDown: value = .portraitUpsideDown
-        case .landscapeLeft: value = .landscapeRight
-        case .landscapeRight: value = .landscapeLeft
-        default: return
-        }
-        orientation = value
-        pipeline.setOrientation(value)
-    }
     func refreshFormats() {
         availableResolutions = CaptureResolution.allCases.filter {
             !CameraPipeline.supportedFrameRates(resolution: $0, frontCamera: frontCamera).isEmpty
@@ -203,15 +190,12 @@ struct ContentView: View {
             }
         }
         .task {
-            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-            model.updateOrientation()
             if automaticStart && !model.running { model.start() }
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { break }
                 if automaticBlackScreen && model.running && !model.configuring && scenePhase == .active && Date().timeIntervalSince(lastActivity) >= 30 { sleepScreen() }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in model.updateOrientation() }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             if automaticStart && scenePhase == .active && !model.running && UIDevice.current.batteryState != .unplugged { model.start() }
         }
@@ -231,7 +215,7 @@ struct ContentView: View {
                 UIApplication.shared.isIdleTimerDisabled = model.running
             }
         }
-        .onDisappear { wake(); UIApplication.shared.isIdleTimerDisabled = false; UIDevice.current.endGeneratingDeviceOrientationNotifications() }
+        .onDisappear { wake(); UIApplication.shared.isIdleTimerDisabled = false }
     }
     private var settings: some View {
         VStack(spacing: 14) {
@@ -278,7 +262,7 @@ struct ContentView: View {
                 }
             }
             Spacer()
-            Text("0.5.4").font(.caption2)
+            Text("0.5.5").font(.caption2)
                 .foregroundColor(BridgeBrand.secondary)
                 .padding(.horizontal, 9).padding(.vertical, 5)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(BridgeBrand.line))
